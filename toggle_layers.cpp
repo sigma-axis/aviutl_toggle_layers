@@ -145,6 +145,12 @@ class Drag {
 		// return if the position didn't change.
 		if (layer_mouse == layer_prev) return false;
 
+		{
+			// limit the target layers to the visible ones.
+			auto top_layer = tl_scroll_v.get_pos();
+			layer_mouse = std::clamp(layer_mouse, top_layer, top_layer + tl_scroll_v.get_page_size() - 1);
+		}
+
 		// set the range to check.
 		int from, until;
 		if (layer_mouse < layer_prev) from = layer_mouse, until = layer_prev;
@@ -302,7 +308,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.00"
+#define PLUGIN_VERSION	"v1.01"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
