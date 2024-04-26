@@ -59,7 +59,7 @@ private:
 	void init_pointers()
 	{
 		auto pick_addr = [this, exedit_base = reinterpret_cast<uintptr_t>(fp->dll_hinst)]
-			<class T>(T & target, ptrdiff_t offset) { target = reinterpret_cast<T>(exedit_base + offset); };
+			<class T>(T& target, ptrdiff_t offset) { target = reinterpret_cast<T>(exedit_base + offset); };
 		pick_addr(LayerSettings,				0x188498);
 		pick_addr(current_scene,				0x1a5310);
 		pick_addr(curr_timeline_layer_height,	0x0a3e20);
@@ -102,23 +102,23 @@ class Drag {
 	static inline constinit int layer_prev = 0;
 
 	static auto& layer_flags(int layer) {
-		return exedit.LayerSettings[layer + num_layers * *exedit.current_scene].flag;
+		return exedit.LayerSettings[layer + num_layers * (*exedit.current_scene)].flag;
 	}
 	// returns if the flag UnDisp is set.
-	static bool get_layer_state(int layer) {
-		return has_flag_or(layer_flags(layer), LayerSetting::Flag::UnDisp);
+	static bool is_layer_undisp(int layer) { return is_layer_undisp(layer_flags(layer)); }
+	static bool is_layer_undisp(LayerSetting::Flag flags) {
+		return has_flag_or(flags, LayerSetting::Flag::UnDisp);
 	}
 	// returns if the flag did change.
-	static bool set_layer_state(int layer, bool undisp)
+	static bool set_layer_undisp(int layer, bool undisp)
 	{
 		auto& flags = layer_flags(layer);
-		if (has_flag_or(flags, LayerSetting::Flag::UnDisp) ^ undisp) {
+		if (is_layer_undisp(flags) ^ undisp) {
 			// push undo buffer.
 			exedit.setundo(layer, 0x10);
 
 			// modify the flag.
-			if (undisp) flags |= LayerSetting::Flag::UnDisp;
-			else flags &= ~LayerSetting::Flag::UnDisp;
+			flags ^= LayerSetting::Flag::UnDisp;
 
 			// flag did change.
 			return true;
@@ -128,13 +128,19 @@ class Drag {
 	}
 
 	constexpr static int x_leftmost_timeline = 64, y_topmost_timeline = 42;
+	// シーンによらず最上段レイヤーは 0 扱い．
 	static int PointToLayer(int y) {
 		y -= y_topmost_timeline;
-		auto h = *exedit.curr_timeline_layer_height;
-		if (y < 0) y -= h - 1; y /= h; // floor division.
+		y = floor_div(y, *exedit.curr_timeline_layer_height);
 		y += *exedit.timeline_v_scroll_pos;
 
 		return std::clamp<int>(y, 0, num_layers);
+	}
+	// division that rounds toward negative infinity.
+	// `divisor` is assumed to be positive.
+	static constexpr auto floor_div(auto divident, auto const divisor) {
+		if (divident < 0) divident -= divisor - 1;
+		return divident / divisor;
 	}
 
 	static bool on_drag(int layer_mouse, AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp)
@@ -142,14 +148,14 @@ class Drag {
 		// scroll vertically if the mouse is outside the window.
 		scroll_vertically_on_drag(layer_mouse, editp);
 
-		// return if the position didn't change.
-		if (layer_mouse == layer_prev) return false;
-
 		{
 			// limit the target layers to the visible ones.
 			auto top_layer = tl_scroll_v.get_pos();
 			layer_mouse = std::clamp(layer_mouse, top_layer, top_layer + tl_scroll_v.get_page_size() - 1);
 		}
+
+		// return if the position didn't change.
+		if (layer_mouse == layer_prev) return false;
 
 		// set the range to check.
 		int from, until;
@@ -160,8 +166,8 @@ class Drag {
 		layer_prev = layer_mouse;
 
 		bool updated = false;
-		for (int l = from; l < until; l++)
-			updated |= set_layer_state(l, turning_undisp);
+		for (int L = from; L < until; L++)
+			updated |= set_layer_undisp(L, turning_undisp);
 
 		return updated;
 	}
@@ -179,9 +185,9 @@ class Drag {
 
 		constexpr auto check_tick = [] {
 		#pragma warning(suppress : 28159) // 32 bit is enough.
-			uint32_t curr = ::GetTickCount();
+			auto curr = ::GetTickCount();
 
-			static constinit uint32_t prev = 0;
+			static constinit decltype(curr) prev = 0;
 			if (curr - prev >= interval_min) {
 				prev = curr;
 				return true;
@@ -205,6 +211,7 @@ public:
 	{
 		if (is_dragging) {
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) {
+				// AviUtl isn't in a suitable state. abort dragging.
 				exit_drag(hwnd);
 				goto default_handler;
 			}
@@ -252,13 +259,13 @@ public:
 
 			// initialize related variables.
 			layer_prev = PointToLayer(mouse_y);
-			turning_undisp = !get_layer_state(layer_prev);
+			turning_undisp = !is_layer_undisp(layer_prev);
 
 			// prepare the undo.
 			exedit.nextundo();
 
 			// update the clicked layer.
-			set_layer_state(layer_prev, turning_undisp);
+			set_layer_undisp(layer_prev, turning_undisp);
 
 			// redraw the updated layer.
 			::InvalidateRect(hwnd, nullptr, FALSE);
@@ -308,7 +315,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.01"
+#define PLUGIN_VERSION	"v1.02"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
