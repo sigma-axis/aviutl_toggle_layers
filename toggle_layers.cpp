@@ -138,9 +138,9 @@ class Drag {
 	}
 	// division that rounds toward negative infinity.
 	// `divisor` is assumed to be positive.
-	static constexpr auto floor_div(auto divident, auto const divisor) {
-		if (divident < 0) divident -= divisor - 1;
-		return divident / divisor;
+	static constexpr auto floor_div(auto dividend, auto const divisor) {
+		if (dividend < 0) dividend -= divisor - 1;
+		return dividend / divisor;
 	}
 
 	static bool on_drag(int layer_mouse, AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp)
