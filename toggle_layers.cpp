@@ -115,7 +115,7 @@ class Drag {
 		auto& flags = layer_flags(layer);
 		if (is_layer_undisp(flags) ^ undisp) {
 			// push undo buffer.
-			exedit.setundo(layer, 0x10);
+			set_layer_undo(layer);
 
 			// modify the flag.
 			flags ^= LayerSetting::Flag::UnDisp;
@@ -126,6 +126,8 @@ class Drag {
 		// flag didn't change.
 		return false;
 	}
+
+	static void set_layer_undo(int layer) { exedit.setundo(layer, 0x10); }
 
 	constexpr static int x_leftmost_timeline = 64, y_topmost_timeline = 42;
 	// シーンによらず最上段レイヤーは 0 扱い．
@@ -259,13 +261,15 @@ public:
 
 			// initialize related variables.
 			layer_prev = PointToLayer(mouse_y);
-			turning_undisp = !is_layer_undisp(layer_prev);
+			auto& clicked_flag = layer_flags(layer_prev);
+			turning_undisp = !is_layer_undisp(clicked_flag);
 
-			// prepare the undo.
+			// prepare and push to the undo buffer.
 			exedit.nextundo();
+			set_layer_undo(layer_prev);
 
 			// update the clicked layer.
-			set_layer_undisp(layer_prev, turning_undisp);
+			clicked_flag ^= LayerSetting::Flag::UnDisp;
 
 			// redraw the updated layer.
 			::InvalidateRect(hwnd, nullptr, FALSE);
@@ -315,7 +319,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.02"
+#define PLUGIN_VERSION	"v1.03-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
