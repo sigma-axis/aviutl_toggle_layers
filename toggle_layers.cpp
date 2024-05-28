@@ -59,7 +59,7 @@ private:
 	void init_pointers()
 	{
 		auto pick_addr = [this, exedit_base = reinterpret_cast<uintptr_t>(fp->dll_hinst)]
-			<class T>(T& target, ptrdiff_t offset) { target = reinterpret_cast<T>(exedit_base + offset); };
+			<class T>(T& flag, ptrdiff_t offset) { flag = reinterpret_cast<T>(exedit_base + offset); };
 		pick_addr(LayerSettings,				0x188498);
 		pick_addr(current_scene,				0x1a5310);
 		pick_addr(curr_timeline_layer_height,	0x0a3e20);
@@ -97,36 +97,56 @@ constexpr struct LayerScrollBar {
 // ExEdit のコールバック乗っ取り．
 ////////////////////////////////
 class Drag {
+	enum class DragMode : uint8_t {
+		none,
+		undisp,
+		lock,
+	};
 	constexpr static size_t num_layers = 100;
-	static inline constinit bool is_dragging = false, turning_undisp = false;
+	static inline DragMode drag_mode = DragMode::none;
+	static inline constinit bool turning_flagged = false;
 	static inline constinit int layer_prev = 0;
 
 	static auto& layer_flags(int layer) {
 		return exedit.LayerSettings[layer + num_layers * (*exedit.current_scene)].flag;
 	}
-	// returns if the flag UnDisp is set.
-	static bool is_layer_undisp(int layer) { return is_layer_undisp(layer_flags(layer)); }
-	static bool is_layer_undisp(LayerSetting::Flag flags) {
-		return has_flag_or(flags, LayerSetting::Flag::UnDisp);
-	}
-	// returns if the flag did change.
-	static bool set_layer_undisp(int layer, bool undisp)
-	{
-		auto& flags = layer_flags(layer);
-		if (is_layer_undisp(flags) ^ undisp) {
-			// push undo buffer.
-			set_layer_undo(layer);
 
-			// modify the flag.
-			flags ^= LayerSetting::Flag::UnDisp;
-
-			// flag did change.
-			return true;
+	struct layer_operation {
+		constexpr static auto mode_to_flag(DragMode mode) {
+			switch (mode) {
+			case Drag::DragMode::undisp: return LayerSetting::Flag::UnDisp;
+			case Drag::DragMode::lock: return LayerSetting::Flag::Locked;
+			default: std::unreachable();
+			}
 		}
-		// flag didn't change.
-		return false;
-	}
 
+		LayerSetting::Flag flag;
+		constexpr layer_operation(LayerSetting::Flag flag) : flag{ flag } {};
+		constexpr layer_operation(DragMode mode) : layer_operation{ mode_to_flag(mode)} {};
+
+		// returns if the target flag is set.
+		bool is_flagged(int layer) const { return is_flagged(layer_flags(layer)); }
+		constexpr bool is_flagged(LayerSetting::Flag flags) const {
+			return has_flag_or(flags, flag);
+		}
+		// returns if the flag did change.
+		bool set(int layer, bool flagging) const
+		{
+			auto& flags = layer_flags(layer);
+			if (is_flagged(flags) ^ flagging) {
+				// push undo buffer.
+				set_layer_undo(layer);
+
+				// modify the flag.
+				flags ^= flag;
+
+				// flag did change.
+				return true;
+			}
+			// flag didn't change.
+			return false;
+		}
+	};
 	static void set_layer_undo(int layer) { exedit.setundo(layer, 0x10); }
 
 	constexpr static int x_leftmost_timeline = 64, y_topmost_timeline = 42;
@@ -167,15 +187,16 @@ class Drag {
 		// update the previous mouse position.
 		layer_prev = layer_mouse;
 
+		layer_operation op{ drag_mode };
 		bool updated = false;
 		for (int L = from; L < until; L++)
-			updated |= set_layer_undisp(L, turning_undisp);
+			updated |= op.set(L, turning_flagged);
 
 		return updated;
 	}
 
 	static void exit_drag(HWND hwnd) {
-		is_dragging = false;
+		drag_mode = DragMode::none;
 		if (::GetCapture() == hwnd)
 			::ReleaseCapture();
 	}
@@ -211,7 +232,7 @@ class Drag {
 public:
 	static BOOL func_wndproc_detour(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp)
 	{
-		if (is_dragging) {
+		if (drag_mode != DragMode::none) {
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) {
 				// AviUtl isn't in a suitable state. abort dragging.
 				exit_drag(hwnd);
@@ -245,8 +266,9 @@ public:
 			}
 		}
 		else {
-			// assume left click with no modifier keys.
-			if (message != WM_LBUTTONDOWN || (wparam & ~MK_LBUTTON) != 0) goto default_handler;
+			// assume left click with no modifier keys other than ctrl.
+			if (message != WM_LBUTTONDOWN ||
+				(wparam & ~(MK_LBUTTON | MK_CONTROL)) != 0) goto default_handler;
 
 			// the mouse should be on a layer header.
 			int mouse_x = static_cast<int16_t>(lparam), mouse_y = static_cast<int16_t>(lparam >> 16);
@@ -256,20 +278,21 @@ public:
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) goto default_handler;
 
 			// Then, initiate the drag.
-			is_dragging = true;
+			drag_mode = (wparam & MK_CONTROL) != 0 ? DragMode::lock : DragMode::undisp;
 			::SetCapture(hwnd);
 
 			// initialize related variables.
 			layer_prev = PointToLayer(mouse_y);
 			auto& clicked_flag = layer_flags(layer_prev);
-			turning_undisp = !is_layer_undisp(clicked_flag);
 
 			// prepare and push to the undo buffer.
 			exedit.nextundo();
 			set_layer_undo(layer_prev);
 
 			// update the clicked layer.
-			clicked_flag ^= LayerSetting::Flag::UnDisp;
+			layer_operation op{ drag_mode };
+			turning_flagged = !op.is_flagged(clicked_flag);
+			clicked_flag ^= op.flag;
 
 			// redraw the updated layer.
 			::InvalidateRect(hwnd, nullptr, FALSE);
@@ -319,7 +342,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.03-beta1"
+#define PLUGIN_VERSION	"v1.10-beta2"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
