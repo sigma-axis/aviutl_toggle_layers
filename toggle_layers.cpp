@@ -266,9 +266,14 @@ public:
 			}
 		}
 		else {
-			// assume left click with no modifier keys other than ctrl.
-			if (message != WM_LBUTTONDOWN ||
-				(wparam & ~(MK_LBUTTON | MK_CONTROL)) != 0) goto default_handler;
+			// assume left click with no modifier keys other than shift.
+			if (message != WM_LBUTTONDOWN) goto default_handler;
+			DragMode drag_mode_cand;
+			switch (wparam & ~MK_LBUTTON) {
+			case 0: drag_mode_cand = DragMode::undisp; break;
+			case MK_SHIFT: drag_mode_cand = DragMode::lock; break;
+			default: goto default_handler;
+			}
 
 			// the mouse should be on a layer header.
 			int mouse_x = static_cast<int16_t>(lparam), mouse_y = static_cast<int16_t>(lparam >> 16);
@@ -278,7 +283,7 @@ public:
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) goto default_handler;
 
 			// Then, initiate the drag.
-			drag_mode = (wparam & MK_CONTROL) != 0 ? DragMode::lock : DragMode::undisp;
+			drag_mode = drag_mode_cand;
 			::SetCapture(hwnd);
 
 			// initialize related variables.
