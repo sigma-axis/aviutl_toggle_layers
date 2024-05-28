@@ -59,7 +59,7 @@ private:
 	void init_pointers()
 	{
 		auto pick_addr = [this, exedit_base = reinterpret_cast<uintptr_t>(fp->dll_hinst)]
-			<class T>(T& flag, ptrdiff_t offset) { flag = reinterpret_cast<T>(exedit_base + offset); };
+			<class T>(T& target, ptrdiff_t offset) { target = reinterpret_cast<T>(exedit_base + offset); };
 		pick_addr(LayerSettings,				0x188498);
 		pick_addr(current_scene,				0x1a5310);
 		pick_addr(curr_timeline_layer_height,	0x0a3e20);
@@ -347,7 +347,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.10"
+#define PLUGIN_VERSION	"v1.11-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
