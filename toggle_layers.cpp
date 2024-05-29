@@ -243,7 +243,7 @@ public:
 			case WM_MOUSEMOVE:
 				if (on_drag(PointToLayer(static_cast<int16_t>(lparam >> 16)), editp, fp)) {
 					::InvalidateRect(hwnd, nullptr, FALSE);
-					return TRUE;
+					return drag_mode == DragMode::undisp ? TRUE : FALSE;
 				}
 				return FALSE;
 
@@ -301,7 +301,7 @@ public:
 
 			// redraw the updated layer.
 			::InvalidateRect(hwnd, nullptr, FALSE);
-			return TRUE;
+			return drag_mode == DragMode::undisp ? TRUE : FALSE;
 		}
 
 	default_handler:
@@ -347,7 +347,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.11-beta1"
+#define PLUGIN_VERSION	"v1.11-beta2"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
