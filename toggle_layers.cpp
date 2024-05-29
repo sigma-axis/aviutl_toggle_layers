@@ -156,7 +156,7 @@ class Drag {
 		y = floor_div(y, *exedit.curr_timeline_layer_height);
 		y += *exedit.timeline_v_scroll_pos;
 
-		return std::clamp<int>(y, 0, num_layers);
+		return std::clamp<int>(y, 0, num_layers - 1);
 	}
 	// division that rounds toward negative infinity.
 	// `divisor` is assumed to be positive.
@@ -347,7 +347,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.11"
+#define PLUGIN_VERSION	"v1.12-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
