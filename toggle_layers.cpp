@@ -12,6 +12,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 
 #include <cstdint>
 #include <algorithm>
+#include <set>
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -45,30 +46,44 @@ inline constinit struct ExEdit092 {
 		return false;
 	}
 
-	LayerSetting*	LayerSettings;				// 0x188498
-	int32_t*		current_scene;				// 0x1a5310
-	int32_t*		curr_timeline_layer_height;	// 0x0a3e20
-	HWND*			timeline_v_scroll_bar;		// 0x158d34
-	int32_t*		timeline_v_scroll_pos;		// 0x1a5308
-	int32_t*		timeline_height_in_layers;	// 0x0a3fbc
+	LayerSetting* LayerSettings;					// 0x188498
+	int32_t* current_scene;					// 0x1a5310
+	int32_t* curr_timeline_layer_height;		// 0x0a3e20
+	HWND* timeline_v_scroll_bar;			// 0x158d34
+	int32_t* timeline_v_scroll_pos;			// 0x1a5308
+	int32_t* timeline_height_in_layers;		// 0x0a3fbc
 
-	void(*nextundo)();							// 0x08d150
-	void(*setundo)(uint32_t, uint32_t);			// 0x08d290
+	int32_t* SortedObjectLayerBeginIndex;	// 0x149670
+	int32_t* SortedObjectLayerEndIndex;		// 0x135ac8
+	Object** SortedObject;					// 0x168fa8
+	Object** ObjectArray_ptr;				// 0x1e0fa4
+	int* SelectingObjectNum_ptr;			// 0x167d88
+	int* SelectingObjectIndex;			// 0x179230
+
+	void(*nextundo)();								// 0x08d150
+	void(*setundo)(uint32_t, uint32_t);				// 0x08d290
 
 private:
 	void init_pointers()
 	{
 		auto pick_addr = [this, exedit_base = reinterpret_cast<uintptr_t>(fp->dll_hinst)]
-			<class T>(T& target, ptrdiff_t offset) { target = reinterpret_cast<T>(exedit_base + offset); };
-		pick_addr(LayerSettings,				0x188498);
-		pick_addr(current_scene,				0x1a5310);
-		pick_addr(curr_timeline_layer_height,	0x0a3e20);
-		pick_addr(timeline_v_scroll_bar,		0x158d34);
-		pick_addr(timeline_v_scroll_pos,		0x1a5308);
-		pick_addr(timeline_height_in_layers,	0x0a3fbc);
+			<class T>(T & target, ptrdiff_t offset) { target = reinterpret_cast<T>(exedit_base + offset); };
+		pick_addr(LayerSettings, 0x188498);
+		pick_addr(current_scene, 0x1a5310);
+		pick_addr(curr_timeline_layer_height, 0x0a3e20);
+		pick_addr(timeline_v_scroll_bar, 0x158d34);
+		pick_addr(timeline_v_scroll_pos, 0x1a5308);
+		pick_addr(timeline_height_in_layers, 0x0a3fbc);
 
-		pick_addr(nextundo,						0x08d150);
-		pick_addr(setundo,						0x08d290);
+		pick_addr(SortedObjectLayerBeginIndex, 0x149670);
+		pick_addr(SortedObjectLayerEndIndex, 0x135ac8);
+		pick_addr(SortedObject, 0x168fa8);
+		pick_addr(ObjectArray_ptr, 0x1e0fa4);
+		pick_addr(SelectingObjectNum_ptr, 0x167d88);
+		pick_addr(SelectingObjectIndex, 0x179230);
+
+		pick_addr(nextundo, 0x08d150);
+		pick_addr(setundo, 0x08d290);
 	}
 } exedit;
 
@@ -94,64 +109,17 @@ constexpr struct LayerScrollBar {
 
 
 ////////////////////////////////
-// ExEdit のコールバック乗っ取り．
+// 各レイヤーに対する操作．
 ////////////////////////////////
-class Drag {
-	enum class DragMode : uint8_t {
-		none,
-		undisp,
-		lock,
-	};
+struct layer_operation {
 	constexpr static size_t num_layers = 100;
-	static inline DragMode drag_mode = DragMode::none;
-	static inline constinit bool turning_flagged = false;
-	static inline constinit int layer_prev = 0;
-
-	static auto& layer_flags(int layer) {
-		return exedit.LayerSettings[layer + num_layers * (*exedit.current_scene)].flag;
-	}
-
-	struct layer_operation {
-		constexpr static auto mode_to_flag(DragMode mode) {
-			switch (mode) {
-			case Drag::DragMode::undisp: return LayerSetting::Flag::UnDisp;
-			case Drag::DragMode::lock: return LayerSetting::Flag::Locked;
-			default: std::unreachable();
-			}
-		}
-
-		LayerSetting::Flag flag;
-		constexpr layer_operation(LayerSetting::Flag flag) : flag{ flag } {};
-		constexpr layer_operation(DragMode mode) : layer_operation{ mode_to_flag(mode)} {};
-
-		// returns if the target flag is set.
-		bool is_flagged(int layer) const { return is_flagged(layer_flags(layer)); }
-		constexpr bool is_flagged(LayerSetting::Flag flags) const {
-			return has_flag_or(flags, flag);
-		}
-		// returns if the flag did change.
-		bool set(int layer, bool flagging) const
-		{
-			auto& flags = layer_flags(layer);
-			if (is_flagged(flags) ^ flagging) {
-				// push undo buffer.
-				set_layer_undo(layer);
-
-				// modify the flag.
-				flags ^= flag;
-
-				// flag did change.
-				return true;
-			}
-			// flag didn't change.
-			return false;
-		}
-	};
-	static void set_layer_undo(int layer) { exedit.setundo(layer, 0x10); }
-
 	constexpr static int x_leftmost_timeline = 64, y_topmost_timeline = 42;
+
+	static bool point_in_header(int x, int y) {
+		return x < x_leftmost_timeline && y >= y_topmost_timeline;
+	}
 	// シーンによらず最上段レイヤーは 0 扱い．
-	static int PointToLayer(int y) {
+	static int point_to_layer(int y) {
 		y -= y_topmost_timeline;
 		y = floor_div(y, *exedit.curr_timeline_layer_height);
 		y += *exedit.timeline_v_scroll_pos;
@@ -165,7 +133,179 @@ class Drag {
 		return dividend / divisor;
 	}
 
-	static bool on_drag(int layer_mouse, AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp)
+	static auto& layer_flags(int layer) {
+		return exedit.LayerSettings[layer + num_layers * (*exedit.current_scene)].flag;
+	}
+	static void set_layer_undo(int layer) { exedit.setundo(layer, 0x10); }
+
+	static inline constinit bool flagging = false;
+	virtual bool initialize(int layer) const = 0;
+	virtual bool set(int layer_from, int layer_until, WPARAM wparam) const = 0;
+	virtual bool notify(HWND hwnd) const {}
+};
+
+template<LayerSetting::Flag flag>
+struct layer_op_flags : layer_operation {
+	bool initialize(int layer) const override
+	{
+		auto& clicked_flag = layer_flags(layer);
+
+		// prepare and push to the undo buffer.
+		exedit.nextundo();
+		set_layer_undo(layer);
+
+		// update the clicked layer.
+		flagging = !has_flag_or(clicked_flag, flag);
+		clicked_flag ^= flag;
+
+		// always results in updates.
+		return true;
+	}
+	bool set(int layer_from, int layer_until, WPARAM) const override
+	{
+		bool updated = false;
+		for (int i = layer_from; i < layer_until; i++) updated |= set(i);
+		return updated;
+	}
+
+private:
+	bool set(int layer) const
+	{
+		if (auto& flags = layer_flags(layer);
+			has_flag_or(flags, flag) ^ flagging) {
+
+			// push undo buffer.
+			set_layer_undo(layer);
+
+			// modify the flag.
+			flags ^= flag;
+
+			// flag did change.
+			return true;
+		}
+		// flag didn't change.
+		return false;
+	}
+};
+struct layer_op_undisp : layer_op_flags<LayerSetting::Flag::UnDisp> {
+	bool notify(HWND hwnd) const override
+	{
+		// redraw the entire timeline.
+		::InvalidateRect(hwnd, nullptr, FALSE);
+
+		// the image should be updated.
+		return true;
+	}
+};
+struct layer_op_locked : layer_op_flags<LayerSetting::Flag::Locked> {
+	bool notify(HWND hwnd) const override
+	{
+		// redraw the header part of the timeline.
+		RECT rc; ::GetClientRect(hwnd, &rc);
+		rc.right = x_leftmost_timeline; rc.top = y_topmost_timeline;
+		::InvalidateRect(hwnd, &rc, FALSE);
+
+		// the image remains unchanged.
+		return false;
+	}
+};
+
+struct layer_op_select : layer_operation {
+private:
+	static int sorted_to_idx(int j) { return exedit.SortedObject[j] - *exedit.ObjectArray_ptr; }
+	static std::set<int> get_selected_index() {
+		// store the selected index to std::set<int>.
+		return { exedit.SelectingObjectIndex, exedit.SelectingObjectIndex + *exedit.SelectingObjectNum_ptr };
+	}
+	static void set_selected_index(std::set<int>& idx) {
+		// copy back the selected index to exedit.
+		int n = 0;
+		for (auto i : idx) exedit.SelectingObjectIndex[n++] = i;
+		*exedit.SelectingObjectNum_ptr = idx.size();
+	}
+
+public:
+	bool initialize(int layer) const override
+	{
+		auto idx = get_selected_index();
+
+		// see whether all objects in the layer is selected.
+		flagging = true; // empty layer should turn to "flagging" mode.
+		for (int j = exedit.SortedObjectLayerBeginIndex[layer], r = exedit.SortedObjectLayerEndIndex[layer];
+			j <= r; j++) {
+			if (idx.contains(sorted_to_idx(j))) flagging = false;
+			else {
+				flagging = true;
+				break;
+			}
+		}
+
+		// then apply the operation to the layer.
+		if (set(layer, idx)) {
+			set_selected_index(idx);
+			return true;
+		}
+		return false;
+	}
+	bool set(int layer_from, int layer_until, WPARAM wparam) const override
+	{
+		// nothing to do when ctrl isn't pressed.
+		if ((wparam & MK_CONTROL) == 0) return false;
+
+		// update each layer.
+		auto idx = get_selected_index();
+		bool updated = false;
+		for (int l = layer_from; l < layer_until; l++) updated |= set(l, idx);
+		if (updated) set_selected_index(idx);
+		return updated;
+	}
+
+private:
+	bool set(int layer, std::set<int>& idx) const
+	{
+		// avoid selecting objects in locked layers.
+		if (has_flag_or(layer_flags(layer), LayerSetting::Flag::Locked)) return false;
+
+		bool updated = false;
+		for (int j = exedit.SortedObjectLayerBeginIndex[layer], r = exedit.SortedObjectLayerEndIndex[layer];
+			j <= r; j++) {
+			int i = sorted_to_idx(j);
+			auto itr = idx.find(i);
+			if ((itr == idx.end()) ^ flagging) continue;
+
+			// update the set.
+			if (flagging) idx.insert(i);
+			else idx.erase(itr);
+			updated = true;
+		}
+
+		return updated;
+	}
+
+public:
+	bool notify(HWND hwnd) const override
+	{
+		// redraw the entire timeline.
+		::InvalidateRect(hwnd, nullptr, FALSE);
+
+		// the image remains unchanged.
+		return false;
+	}
+};
+
+
+////////////////////////////////
+// ExEdit のコールバック乗っ取り．
+////////////////////////////////
+class Drag {
+	static constexpr layer_op_undisp op_undisp{};
+	static constexpr layer_op_locked op_locked{};
+	static constexpr layer_op_select op_select{};
+
+	static inline constinit layer_operation const* curr_operation = nullptr;
+	static inline constinit int layer_prev = 0;
+
+	static bool on_drag(int layer_mouse, WPARAM wparam, AviUtl::EditHandle* editp)
 	{
 		// scroll vertically if the mouse is outside the window.
 		scroll_vertically_on_drag(layer_mouse, editp);
@@ -187,16 +327,11 @@ class Drag {
 		// update the previous mouse position.
 		layer_prev = layer_mouse;
 
-		layer_operation op{ drag_mode };
-		bool updated = false;
-		for (int L = from; L < until; L++)
-			updated |= op.set(L, turning_flagged);
-
-		return updated;
+		return curr_operation->set(from, until, wparam);
 	}
 
 	static void exit_drag(HWND hwnd) {
-		drag_mode = DragMode::none;
+		curr_operation = nullptr;
 		if (::GetCapture() == hwnd)
 			::ReleaseCapture();
 	}
@@ -232,7 +367,7 @@ class Drag {
 public:
 	static BOOL func_wndproc_detour(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp)
 	{
-		if (drag_mode != DragMode::none) {
+		if (curr_operation != nullptr) {
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) {
 				// AviUtl isn't in a suitable state. abort dragging.
 				exit_drag(hwnd);
@@ -241,10 +376,8 @@ public:
 
 			switch (message) {
 			case WM_MOUSEMOVE:
-				if (on_drag(PointToLayer(static_cast<int16_t>(lparam >> 16)), editp, fp)) {
-					::InvalidateRect(hwnd, nullptr, FALSE);
-					return drag_mode == DragMode::undisp ? TRUE : FALSE;
-				}
+				if (on_drag(layer_operation::point_to_layer(static_cast<int16_t>(lparam >> 16)), wparam, editp))
+					return curr_operation->notify(hwnd) ? TRUE : FALSE;
 				return FALSE;
 
 			case WM_LBUTTONDOWN:
@@ -268,40 +401,30 @@ public:
 		else {
 			// assume left click with no modifier keys other than shift.
 			if (message != WM_LBUTTONDOWN) goto default_handler;
-			DragMode drag_mode_cand;
+			layer_operation const* cand_operation;
 			switch (wparam & ~MK_LBUTTON) {
-			case 0: drag_mode_cand = DragMode::undisp; break;
-			case MK_SHIFT: drag_mode_cand = DragMode::lock; break;
+			case 0: cand_operation = &op_undisp; break;
+			case MK_SHIFT: cand_operation = &op_locked; break;
+			case MK_CONTROL: cand_operation = &op_select; break;
 			default: goto default_handler;
 			}
 
 			// the mouse should be on a layer header.
 			int mouse_x = static_cast<int16_t>(lparam), mouse_y = static_cast<int16_t>(lparam >> 16);
-			if (!(mouse_x < x_leftmost_timeline && mouse_y >= y_topmost_timeline)) goto default_handler;
+			if (!layer_operation::point_in_header(mouse_x, mouse_y)) goto default_handler;
 
 			// AviUtl must be in a suitable state.
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) goto default_handler;
 
 			// Then, initiate the drag.
-			drag_mode = drag_mode_cand;
+			curr_operation = cand_operation;
 			::SetCapture(hwnd);
 
 			// initialize related variables.
-			layer_prev = PointToLayer(mouse_y);
-			auto& clicked_flag = layer_flags(layer_prev);
-
-			// prepare and push to the undo buffer.
-			exedit.nextundo();
-			set_layer_undo(layer_prev);
-
-			// update the clicked layer.
-			layer_operation op{ drag_mode };
-			turning_flagged = !op.is_flagged(clicked_flag);
-			clicked_flag ^= op.flag;
-
-			// redraw the updated layer.
-			::InvalidateRect(hwnd, nullptr, FALSE);
-			return drag_mode == DragMode::undisp ? TRUE : FALSE;
+			layer_prev = layer_operation::point_to_layer(mouse_y);
+			if (curr_operation->initialize(layer_prev))
+				return curr_operation->notify(hwnd) ? TRUE : FALSE;
+			return FALSE;
 		}
 
 	default_handler:
@@ -347,7 +470,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.12"
+#define PLUGIN_VERSION	"v1.20-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
