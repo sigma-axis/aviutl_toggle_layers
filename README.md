@@ -6,6 +6,8 @@
 
 ![一括切り替えのデモ](https://github.com/sigma-axis/aviutl_toggle_layers/assets/132639613/dc4cd6d3-e295-47d8-be84-5ae6653b494f)
 
+https://github.com/sigma-axis/aviutl_toggle_layers/assets/132639613/63deb25e-f931-49f6-92c0-a3dbc9b4ea90
+
 ## 動作要件
 
 - AviUtl 1.10 + 拡張編集 0.92
