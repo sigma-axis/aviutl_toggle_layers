@@ -46,44 +46,44 @@ inline constinit struct ExEdit092 {
 		return false;
 	}
 
-	LayerSetting* LayerSettings;					// 0x188498
-	int32_t* current_scene;					// 0x1a5310
-	int32_t* curr_timeline_layer_height;		// 0x0a3e20
-	HWND* timeline_v_scroll_bar;			// 0x158d34
-	int32_t* timeline_v_scroll_pos;			// 0x1a5308
-	int32_t* timeline_height_in_layers;		// 0x0a3fbc
+	LayerSetting*	LayerSettings;				// 0x188498
+	int32_t*	current_scene;					// 0x1a5310
+	int32_t*	curr_timeline_layer_height;		// 0x0a3e20
+	HWND*		timeline_v_scroll_bar;			// 0x158d34
+	int32_t*	timeline_v_scroll_pos;			// 0x1a5308
+	int32_t*	timeline_height_in_layers;		// 0x0a3fbc
 
-	int32_t* SortedObjectLayerBeginIndex;	// 0x149670
-	int32_t* SortedObjectLayerEndIndex;		// 0x135ac8
-	Object** SortedObject;					// 0x168fa8
-	Object** ObjectArray_ptr;				// 0x1e0fa4
-	int* SelectingObjectNum_ptr;			// 0x167d88
-	int* SelectingObjectIndex;			// 0x179230
+	int32_t*	SortedObjectLayerBeginIndex;	// 0x149670
+	int32_t*	SortedObjectLayerEndIndex;		// 0x135ac8
+	Object**	SortedObject;					// 0x168fa8
+	Object**	ObjectArray_ptr;				// 0x1e0fa4
+	int32_t*	SelectingObjectNum_ptr;			// 0x167d88
+	int32_t*	SelectingObjectIndex;			// 0x179230
 
-	void(*nextundo)();								// 0x08d150
-	void(*setundo)(uint32_t, uint32_t);				// 0x08d290
+	void(*nextundo)();							// 0x08d150
+	void(*setundo)(uint32_t, uint32_t);			// 0x08d290
 
 private:
 	void init_pointers()
 	{
 		auto pick_addr = [this, exedit_base = reinterpret_cast<uintptr_t>(fp->dll_hinst)]
 			<class T>(T & target, ptrdiff_t offset) { target = reinterpret_cast<T>(exedit_base + offset); };
-		pick_addr(LayerSettings, 0x188498);
-		pick_addr(current_scene, 0x1a5310);
-		pick_addr(curr_timeline_layer_height, 0x0a3e20);
-		pick_addr(timeline_v_scroll_bar, 0x158d34);
-		pick_addr(timeline_v_scroll_pos, 0x1a5308);
-		pick_addr(timeline_height_in_layers, 0x0a3fbc);
+		pick_addr(LayerSettings,				0x188498);
+		pick_addr(current_scene,				0x1a5310);
+		pick_addr(curr_timeline_layer_height,	0x0a3e20);
+		pick_addr(timeline_v_scroll_bar,		0x158d34);
+		pick_addr(timeline_v_scroll_pos,		0x1a5308);
+		pick_addr(timeline_height_in_layers,	0x0a3fbc);
 
-		pick_addr(SortedObjectLayerBeginIndex, 0x149670);
-		pick_addr(SortedObjectLayerEndIndex, 0x135ac8);
-		pick_addr(SortedObject, 0x168fa8);
-		pick_addr(ObjectArray_ptr, 0x1e0fa4);
-		pick_addr(SelectingObjectNum_ptr, 0x167d88);
-		pick_addr(SelectingObjectIndex, 0x179230);
+		pick_addr(SortedObjectLayerBeginIndex,	0x149670);
+		pick_addr(SortedObjectLayerEndIndex,	0x135ac8);
+		pick_addr(SortedObject,					0x168fa8);
+		pick_addr(ObjectArray_ptr,				0x1e0fa4);
+		pick_addr(SelectingObjectNum_ptr,		0x167d88);
+		pick_addr(SelectingObjectIndex,			0x179230);
 
-		pick_addr(nextundo, 0x08d150);
-		pick_addr(setundo, 0x08d290);
+		pick_addr(nextundo,						0x08d150);
+		pick_addr(setundo,						0x08d290);
 	}
 } exedit;
 
@@ -213,27 +213,26 @@ struct layer_op_locked : layer_op_flags<LayerSetting::Flag::Locked> {
 struct layer_op_select : layer_operation {
 private:
 	static int sorted_to_idx(int j) { return exedit.SortedObject[j] - *exedit.ObjectArray_ptr; }
-	static std::set<int> get_selected_index() {
+	static std::set<int> get_selected() {
 		// store the selected index to std::set<int>.
 		return { exedit.SelectingObjectIndex, exedit.SelectingObjectIndex + *exedit.SelectingObjectNum_ptr };
 	}
-	static void set_selected_index(std::set<int>& idx) {
+	static void set_selected(std::set<int>& sel) {
 		// copy back the selected index to exedit.
-		int n = 0;
-		for (auto i : idx) exedit.SelectingObjectIndex[n++] = i;
-		*exedit.SelectingObjectNum_ptr = idx.size();
+		std::copy(sel.begin(), sel.end(), exedit.SelectingObjectIndex);
+		*exedit.SelectingObjectNum_ptr = sel.size();
 	}
 
 public:
 	bool initialize(int layer) const override
 	{
-		auto idx = get_selected_index();
+		auto sel = get_selected();
 
 		// see whether all objects in the layer is selected.
 		flagging = true; // empty layer should turn to "flagging" mode.
 		for (int j = exedit.SortedObjectLayerBeginIndex[layer], r = exedit.SortedObjectLayerEndIndex[layer];
 			j <= r; j++) {
-			if (idx.contains(sorted_to_idx(j))) flagging = false;
+			if (sel.contains(sorted_to_idx(j))) flagging = false;
 			else {
 				flagging = true;
 				break;
@@ -241,11 +240,13 @@ public:
 		}
 
 		// then apply the operation to the layer.
-		if (set(layer, idx)) {
-			set_selected_index(idx);
-			return true;
-		}
-		return false;
+		if (flagging) add(layer, sel);
+		else remove(layer, sel);
+
+		// if any additions/removals took place, set them back to exedit.
+		if (sel.size() == *exedit.SelectingObjectNum_ptr) return false;
+		set_selected(sel);
+		return true;
 	}
 	bool set(int layer_from, int layer_until, WPARAM wparam) const override
 	{
@@ -253,33 +254,33 @@ public:
 		if ((wparam & MK_CONTROL) == 0) return false;
 
 		// update each layer.
-		auto idx = get_selected_index();
-		bool updated = false;
-		for (int l = layer_from; l < layer_until; l++) updated |= set(l, idx);
-		if (updated) set_selected_index(idx);
-		return updated;
+		auto sel = get_selected();
+		if (flagging) {
+			for (int l = layer_from; l < layer_until; l++) add(l, sel);
+		}
+		else {
+			for (int l = layer_from; l < layer_until; l++) remove(l, sel);
+		}
+
+		// if any additions/removals took place, set them back to exedit.
+		if (sel.size() == *exedit.SelectingObjectNum_ptr) return false;
+		set_selected(sel);
+		return true;
 	}
 
 private:
-	bool set(int layer, std::set<int>& idx) const
+	void add(int layer, std::set<int>& sel) const
 	{
 		// avoid selecting objects in locked layers.
-		if (has_flag_or(layer_flags(layer), LayerSetting::Flag::Locked)) return false;
+		if (has_flag_or(layer_flags(layer), LayerSetting::Flag::Locked)) return;
 
-		bool updated = false;
 		for (int j = exedit.SortedObjectLayerBeginIndex[layer], r = exedit.SortedObjectLayerEndIndex[layer];
-			j <= r; j++) {
-			int i = sorted_to_idx(j);
-			auto itr = idx.find(i);
-			if ((itr == idx.end()) ^ flagging) continue;
-
-			// update the set.
-			if (flagging) idx.insert(i);
-			else idx.erase(itr);
-			updated = true;
-		}
-
-		return updated;
+			j <= r; j++) sel.insert(sorted_to_idx(j));
+	}
+	void remove(int layer, std::set<int>& sel) const
+	{
+		for (int j = exedit.SortedObjectLayerBeginIndex[layer], r = exedit.SortedObjectLayerEndIndex[layer];
+			j <= r; j++) sel.erase(sorted_to_idx(j));
 	}
 
 public:
@@ -470,7 +471,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.20-beta1"
+#define PLUGIN_VERSION	"v1.20-beta2"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
