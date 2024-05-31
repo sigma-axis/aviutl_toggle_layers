@@ -169,7 +169,7 @@ struct layer_op_flags : layer_operation {
 	}
 
 private:
-	bool set(int layer) const
+	static bool set(int layer)
 	{
 		if (auto& flags = layer_flags(layer);
 			has_flag_or(flags, flag) ^ flagging) {
@@ -240,8 +240,7 @@ public:
 		}
 
 		// then apply the operation to the layer.
-		if (flagging) add(layer, sel);
-		else remove(layer, sel);
+		(flagging ? add : remove)(layer, sel);
 
 		// if any additions/removals took place, set them back to exedit.
 		if (sel.size() == *exedit.SelectingObjectNum_ptr) return false;
@@ -255,12 +254,8 @@ public:
 
 		// update each layer.
 		auto sel = get_selected();
-		if (flagging) {
-			for (int l = layer_from; l < layer_until; l++) add(l, sel);
-		}
-		else {
-			for (int l = layer_from; l < layer_until; l++) remove(l, sel);
-		}
+		auto& op = flagging ? add : remove;
+		for (int l = layer_from; l < layer_until; l++) op(l, sel);
 
 		// if any additions/removals took place, set them back to exedit.
 		if (sel.size() == *exedit.SelectingObjectNum_ptr) return false;
@@ -269,7 +264,7 @@ public:
 	}
 
 private:
-	void add(int layer, std::set<int>& sel) const
+	static void add(int layer, std::set<int>& sel)
 	{
 		// avoid selecting objects in locked layers.
 		if (has_flag_or(layer_flags(layer), LayerSetting::Flag::Locked)) return;
@@ -277,7 +272,7 @@ private:
 		for (int j = exedit.SortedObjectLayerBeginIndex[layer], r = exedit.SortedObjectLayerEndIndex[layer];
 			j <= r; j++) sel.insert(sorted_to_idx(j));
 	}
-	void remove(int layer, std::set<int>& sel) const
+	static void remove(int layer, std::set<int>& sel)
 	{
 		for (int j = exedit.SortedObjectLayerBeginIndex[layer], r = exedit.SortedObjectLayerEndIndex[layer];
 			j <= r; j++) sel.erase(sorted_to_idx(j));
@@ -471,7 +466,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.20"
+#define PLUGIN_VERSION	"v1.21-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
