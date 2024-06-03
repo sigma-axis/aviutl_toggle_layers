@@ -60,6 +60,9 @@ inline constinit struct ExEdit092 {
 	int32_t*	SelectingObjectNum_ptr;			// 0x167d88
 	int32_t*	SelectingObjectIndex;			// 0x179230
 
+	//int32_t*	last_clicked_x;					// 0x1460b4
+	int32_t*	last_clicked_y;					// 0x196744
+
 	void(*nextundo)();							// 0x08d150
 	void(*setundo)(uint32_t, uint32_t);			// 0x08d290
 
@@ -81,6 +84,9 @@ private:
 		pick_addr(ObjectArray_ptr,				0x1e0fa4);
 		pick_addr(SelectingObjectNum_ptr,		0x167d88);
 		pick_addr(SelectingObjectIndex,			0x179230);
+
+		//pick_addr(last_clicked_x				0x1460b4);
+		pick_addr(last_clicked_y,				0x196744);
 
 		pick_addr(nextundo,						0x08d150);
 		pick_addr(setundo,						0x08d290);
@@ -145,14 +151,21 @@ struct layer_operation {
 	}
 	static void set_layer_undo(int layer) { exedit.setundo(layer, 0x10); }
 
+	virtual bool execute(HWND hwnd, int mouse_x, int mouse_y, AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp) const {
+		return false;
+	}
+};
+
+struct layer_drag_operation : layer_operation {
 	static inline constinit bool flagging = false;
 	virtual bool initialize(int layer) const = 0;
 	virtual bool set(int layer_from, int layer_until, WPARAM wparam) const = 0;
 	virtual bool notify(HWND hwnd) const {}
+
 };
 
 template<LayerSetting::Flag flag>
-struct layer_op_flags : layer_operation {
+struct layer_op_flags : layer_drag_operation {
 	bool initialize(int layer) const override
 	{
 		auto& clicked_flag = layer_flags(layer);
@@ -217,7 +230,7 @@ struct layer_op_locked : layer_op_flags<LayerSetting::Flag::Locked> {
 	}
 };
 
-struct layer_op_select : layer_operation {
+struct layer_op_select : layer_drag_operation {
 private:
 	static int sorted_to_idx(int j) { return exedit.SortedObject[j] - *exedit.ObjectArray_ptr; }
 	static std::set<int> get_selected() {
@@ -296,6 +309,16 @@ public:
 	}
 };
 
+struct layer_op_rename : layer_operation {
+	constexpr static uint32_t
+		layer_command_id_rename = 1056,
+		layer_command_id_toggle_others = 1075;
+	bool execute(HWND hwnd, int mouse_x, int mouse_y, AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp) const override {
+		*exedit.last_clicked_y = mouse_y;
+		return exedit.func_wndproc(hwnd, WM_COMMAND, layer_command_id_rename, 0, editp, fp) != FALSE;
+	}
+};
+
 
 ////////////////////////////////
 // ExEdit のコールバック乗っ取り．
@@ -304,8 +327,9 @@ class Drag {
 	static constexpr layer_op_undisp op_undisp{};
 	static constexpr layer_op_locked op_locked{};
 	static constexpr layer_op_select op_select{};
+	static constexpr layer_op_rename op_rename{};
 
-	static inline constinit layer_operation const* curr_operation = nullptr;
+	static inline constinit layer_drag_operation const* curr_operation = nullptr;
 	static inline constinit int layer_prev = 0;
 
 	static bool on_drag(int layer_mouse, WPARAM wparam, AviUtl::EditHandle* editp)
@@ -367,6 +391,17 @@ class Drag {
 		tl_scroll_v.set_pos(tl_scroll_v.get_pos() + dir, editp);
 	}
 
+	static layer_operation const* choose_operation(WPARAM wparam) {
+		switch (wparam & ~MK_LBUTTON) {
+		case 0:
+			if (::GetKeyState(VK_MENU) < 0) return &op_rename;
+			else return &op_undisp;
+		case MK_SHIFT: return &op_locked;
+		case MK_CONTROL: return &op_select;
+		}
+		return nullptr;
+	}
+
 public:
 	static BOOL func_wndproc_detour(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp)
 	{
@@ -379,9 +414,8 @@ public:
 
 			switch (message) {
 			case WM_MOUSEMOVE:
-				if (on_drag(layer_operation::point_to_layer(static_cast<int16_t>(lparam >> 16)), wparam, editp))
-					return curr_operation->notify(hwnd) ? TRUE : FALSE;
-				return FALSE;
+				return on_drag(layer_operation::point_to_layer(static_cast<int16_t>(lparam >> 16)), wparam, editp)
+					&& curr_operation->notify(hwnd) ? TRUE : FALSE;
 
 			case WM_LBUTTONDOWN:
 			case WM_RBUTTONDOWN:
@@ -404,13 +438,9 @@ public:
 		else {
 			// assume left click with no modifier keys other than shift.
 			if (message != WM_LBUTTONDOWN) goto default_handler;
-			layer_operation const* cand_operation;
-			switch (wparam & ~MK_LBUTTON) {
-			case 0: cand_operation = &op_undisp; break;
-			case MK_SHIFT: cand_operation = &op_locked; break;
-			case MK_CONTROL: cand_operation = &op_select; break;
-			default: goto default_handler;
-			}
+
+			layer_operation const* cand_operation = choose_operation(wparam);
+			if (cand_operation == nullptr) goto default_handler;
 
 			// the mouse should be on a layer header.
 			int mouse_x = static_cast<int16_t>(lparam), mouse_y = static_cast<int16_t>(lparam >> 16);
@@ -419,15 +449,18 @@ public:
 			// AviUtl must be in a suitable state.
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) goto default_handler;
 
-			// Then, initiate the drag.
-			curr_operation = cand_operation;
-			::SetCapture(hwnd);
+			if (curr_operation = dynamic_cast<layer_drag_operation const*>(cand_operation)) {
+				// assigned operation is a drag. so initiate it.
+				::SetCapture(hwnd);
 
-			// initialize related variables.
-			layer_prev = layer_operation::point_to_layer(mouse_y);
-			if (curr_operation->initialize(layer_prev))
-				return curr_operation->notify(hwnd) ? TRUE : FALSE;
-			return FALSE;
+				// initialize related variables.
+				layer_prev = layer_operation::point_to_layer(mouse_y);
+				return curr_operation->initialize(layer_prev)
+					&& curr_operation->notify(hwnd) ? TRUE : FALSE;
+			}
+
+			// assigned operation is not a drag. simply execute it.
+			return cand_operation->execute(hwnd, mouse_x, mouse_y, editp, fp) ? TRUE : FALSE;
 		}
 
 	default_handler:
@@ -473,7 +506,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.21-beta1"
+#define PLUGIN_VERSION	"v1.30-beta2"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
