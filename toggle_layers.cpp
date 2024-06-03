@@ -132,6 +132,13 @@ struct layer_operation {
 		if (dividend < 0) dividend -= divisor - 1;
 		return dividend / divisor;
 	}
+	// returns y-coordinate of the top side of the layer.
+	static int layer_to_point(int layer) {
+		layer -= *exedit.timeline_v_scroll_pos;
+		layer *= *exedit.curr_timeline_layer_height;
+		layer += y_topmost_timeline;
+		return layer;
+	}
 
 	static auto& layer_flags(int layer) {
 		return exedit.LayerSettings[layer + num_layers * (*exedit.current_scene)].flag;
@@ -164,7 +171,7 @@ struct layer_op_flags : layer_operation {
 	bool set(int layer_from, int layer_until, WPARAM) const override
 	{
 		bool updated = false;
-		for (int i = layer_from; i < layer_until; i++) updated |= set(i);
+		for (int l = layer_from; l < layer_until; l++) updated |= set(l);
 		return updated;
 	}
 
