@@ -13,6 +13,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #include <cstdint>
 #include <algorithm>
 #include <set>
+#include <ranges>
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -334,6 +335,94 @@ constexpr static uint32_t
 constexpr layer_command_operation<layer_command_id_rename> op_rename;
 constexpr layer_command_operation<layer_command_id_toggle_others> op_toggle_others;
 
+
+////////////////////////////////
+// 設定項目．
+////////////////////////////////
+enum class mod_key : uint8_t {
+	no_keys = 0,
+	ctrl  = 1 << 0,
+	shift = 1 << 1,
+	alt   = 1 << 2,
+};
+template<> struct AviUtl::detail::flag::ops_def<mod_key> :std::true_type {};
+enum class layer_op_kind : uint8_t {
+	none          = 0,
+	undisp        = 1,
+	locked        = 2,
+	coord_link    = 3,
+	clip          = 4,
+	select        = 5,
+	rename        = 6,
+	toggle_others = 7,
+};
+inline constinit struct Settings {
+private:
+	static constexpr const char* mod_key_name(mod_key keys) {
+		switch (keys) {
+			using enum mod_key;
+		case no_keys:				return "no_keys";
+		case ctrl:					return "ctrl";
+		case shift:					return "shift";
+		case ctrl | shift:			return "ctrl_shift";
+		case alt:					return "alt";
+		case ctrl | alt:			return "ctrl_alt";
+		case shift | alt:			return "shift_alt";
+		case ctrl | shift | alt:	return "ctrl_shift_alt";
+		}
+		std::unreachable();
+	}
+
+public:
+	void load(const char* inifile)
+	{
+		for (auto [k, v] : mapping | std::views::enumerate) {
+			auto key = static_cast<mod_key>(k);
+			auto val = static_cast<layer_op_kind>(::GetPrivateProfileIntA(
+				"key_combination", mod_key_name(key), static_cast<int>(v), inifile));
+
+			// select operation requires ctrl key pressed.
+			if (val == layer_op_kind::select && !has_flag_or(key, mod_key::ctrl))
+				v = layer_op_kind::none;
+			else v = val;
+		}
+	}
+
+	layer_operation const* map(mod_key keys) const
+	{
+		auto i = static_cast<size_t>(keys);
+		if (i >= std::size(mapping)) return nullptr;
+
+		auto j = static_cast<size_t>(mapping[i]);
+		if (j >= std::size(kind_to_ptr)) return nullptr;
+
+		return kind_to_ptr[j];
+	}
+
+private:
+	static constexpr layer_operation const* kind_to_ptr[]{
+		nullptr,
+		&op_undisp,
+		&op_locked,
+		&op_coord_link,
+		&op_clip,
+		&op_select,
+		&op_rename,
+		&op_toggle_others,
+	};
+	layer_op_kind mapping[8]{
+		layer_op_kind::undisp,	// no mod key.
+		layer_op_kind::select,	// ctrl.
+		layer_op_kind::locked,	// shift.
+		layer_op_kind::none,	// ctrl+shift.
+		layer_op_kind::rename,	// alt.
+		layer_op_kind::none,	// ctrl+alt.
+		layer_op_kind::none,	// shift+alt.
+		layer_op_kind::none,	// ctrl+shift+alt.
+	};
+} settings;
+
+
 ////////////////////////////////
 // ExEdit のコールバック乗っ取り．
 ////////////////////////////////
@@ -397,14 +486,14 @@ class Drag {
 	}
 
 	static layer_operation const* choose_operation(WPARAM wparam) {
-		switch (wparam & ~MK_LBUTTON) {
-		case 0:
-			if (::GetKeyState(VK_MENU) < 0) return &op_rename;
-			else return &op_undisp;
-		case MK_SHIFT: return &op_locked;
-		case MK_CONTROL: return &op_select;
-		}
-		return nullptr;
+		if (wparam & ~(MK_LBUTTON | MK_CONTROL | MK_SHIFT)) return nullptr;
+
+		using enum mod_key;
+		mod_key keys = no_keys;
+		if ((wparam & MK_CONTROL) != 0) keys |= ctrl;
+		if ((wparam & MK_SHIFT) != 0) keys |= shift;
+		if (::GetKeyState(VK_MENU) < 0) keys |= alt;
+		return settings.map(keys);
 	}
 
 public:
@@ -454,8 +543,8 @@ public:
 			// AviUtl must be in a suitable state.
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) goto default_handler;
 
-				// initialize related variables.
-				layer_prev = layer_operation::point_to_layer(mouse_y);
+			// initialize related variables.
+			layer_prev = layer_operation::point_to_layer(mouse_y);
 
 			if (curr_operation = dynamic_cast<layer_drag_operation const*>(cand_operation))
 				// assigned operation is a drag. capture the mouse.
@@ -483,6 +572,14 @@ static BOOL func_init(AviUtl::FilterPlugin* fp)
 		return FALSE;
 	}
 
+	// 設定ロード．
+	char path[MAX_PATH];
+	auto len = ::GetModuleFileNameA(fp->dll_hinst, path, std::size(path));
+	if (len >= 3) {
+		::strcpy_s(&path[len - 3], 3 + 1, "ini");
+		settings.load(path);
+	}
+
 	// コールバック関数差し替え．
 	exedit.fp->func_WndProc = &Drag::func_wndproc_detour;
 
@@ -508,7 +605,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.31-beta1"
+#define PLUGIN_VERSION	"v1.40-beta2"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
