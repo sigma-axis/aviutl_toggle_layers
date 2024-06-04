@@ -12,6 +12,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 
 #include <cstdint>
 #include <algorithm>
+#include <vector>
 #include <set>
 #include <ranges>
 
@@ -66,6 +67,7 @@ inline constinit struct ExEdit092 {
 
 	void(*nextundo)();							// 0x08d150
 	void(*setundo)(uint32_t, uint32_t);			// 0x08d290
+	int32_t(*update_ObjectTables)();			// 0x02b0f0
 
 private:
 	void init_pointers()
@@ -91,6 +93,7 @@ private:
 
 		pick_addr(nextundo,						0x08d150);
 		pick_addr(setundo,						0x08d290);
+		pick_addr(update_ObjectTables,			0x02b0f0);
 	}
 } exedit;
 
@@ -161,6 +164,7 @@ protected:
 		if (curr < prev) return { curr, prev };
 		else return { prev + 1, curr + 1 };
 	}
+	static int sorted_to_idx(int j) { return exedit.SortedObject[j] - *exedit.ObjectArray_ptr; }
 };
 
 struct layer_drag_operation : layer_operation {
@@ -240,7 +244,6 @@ constexpr layer_op_flags<LayerSetting::Flag::Clip, true, false> op_clip;
 // オブジェクト選択．
 constexpr struct : layer_drag_operation {
 private:
-	static int sorted_to_idx(int j) { return exedit.SortedObject[j] - *exedit.ObjectArray_ptr; }
 	static std::set<int> get_selected() {
 		// store the selected index to std::set<int>.
 		return { exedit.SelectingObjectIndex, exedit.SelectingObjectIndex + *exedit.SelectingObjectNum_ptr };
@@ -319,6 +322,81 @@ public:
 	}
 } op_select;
 
+// レイヤードラッグ．
+constexpr struct : layer_drag_operation {
+private:
+	static inline constinit struct {
+		int from, until;
+		bool is_marked(int i) const {
+			return from <= i && i < until;
+		}
+		bool is_empty() const { return from >= until; }
+		void mark_range(int l1, int l2) {
+			if (l1 > l2) std::swap(l1, l2);
+			if (l1 < from) from = l1;
+			else if (l2 >= until) until = l2 + 1;
+		}
+		void start(int layer) { from = until = layer; }
+	} range_undo_set{ 0, 0 };
+
+	static void set_object_undo(int idx_obj) { exedit.setundo(idx_obj, 0x08); }
+
+public:
+	bool initialize(int layer, AviUtl::EditHandle* editp) const override
+	{
+		// reset the "setundo() was called" flags.
+		range_undo_set.start(layer);
+		return false;
+	}
+	bool set(int layer_prev, int layer_curr, WPARAM wparam) const override
+	{
+		int dir = layer_prev < layer_curr ? +1 : -1;
+
+		// call setundo() for each layer if not yet.
+		if (range_undo_set.is_empty()) exedit.nextundo();
+		for (int layer = layer_prev; layer != layer_curr + dir; layer += dir) {
+			if (!range_undo_set.is_marked(layer)) {
+				for (int j = exedit.SortedObjectLayerBeginIndex[layer], R = exedit.SortedObjectLayerEndIndex[layer];
+					j <= R; j++)
+					set_object_undo(sorted_to_idx(j));
+				set_layer_undo(layer);
+			}
+		}
+		range_undo_set.mark_range(layer_prev, layer_curr);
+
+		// modify the objects on the dragged layer.
+		for (int j = exedit.SortedObjectLayerBeginIndex[layer_prev], R = exedit.SortedObjectLayerEndIndex[layer_prev];
+			j <= R; j++) {
+			auto* obj = exedit.SortedObject[j];
+			obj->layer_disp = obj->layer_set = layer_curr;
+		}
+		auto dragged_layer_settings = exedit.LayerSettings[layer_prev];
+
+		// modify objects and the settings of passing-through layers.
+		for (int layer = layer_prev; layer != layer_curr; layer += dir) {
+			for (int j = exedit.SortedObjectLayerBeginIndex[layer + dir], R = exedit.SortedObjectLayerEndIndex[layer + dir];
+				j <= R; j++) {
+				auto* obj = exedit.SortedObject[j];
+				obj->layer_disp = obj->layer_set = layer;
+			}
+			exedit.LayerSettings[layer] = exedit.LayerSettings[layer + dir];
+		}
+		exedit.LayerSettings[layer_curr] = dragged_layer_settings;
+
+		// then update the sorted tables.
+		exedit.update_ObjectTables();
+		return true;
+	}
+	bool notify() const override
+	{
+		// redraw the entire timeline.
+		::InvalidateRect(exedit.fp->hwnd, nullptr, FALSE);
+
+		// the image also needs updated.
+		return true;
+	}
+} op_move;
+
 // 右クリックコマンドの発動．
 template<uint32_t id>
 struct layer_command_operation : layer_operation {
@@ -355,6 +433,7 @@ enum class layer_op_kind : uint8_t {
 	select        = 5,
 	rename        = 6,
 	toggle_others = 7,
+	move          = 8,
 };
 inline constinit struct Settings {
 private:
@@ -409,8 +488,9 @@ private:
 		&op_select,
 		&op_rename,
 		&op_toggle_others,
+		&op_move,
 	};
-	layer_op_kind mapping[8]{
+	layer_op_kind mapping[1 << 3]{
 		layer_op_kind::undisp,	// no mod key.
 		layer_op_kind::select,	// ctrl.
 		layer_op_kind::locked,	// shift.
@@ -605,7 +685,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.40"
+#define PLUGIN_VERSION	"v1.50-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
