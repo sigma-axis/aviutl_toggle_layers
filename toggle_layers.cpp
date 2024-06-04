@@ -151,22 +151,27 @@ struct layer_operation {
 	}
 	static void set_layer_undo(int layer) { exedit.setundo(layer, 0x10); }
 
-	virtual bool execute(HWND hwnd, int mouse_x, int mouse_y, AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp) const {
-		return false;
+	virtual bool initialize(int layer, AviUtl::EditHandle* editp) const = 0;
+	virtual bool notify() const { return false; }
+
+protected:
+	static std::pair<int, int> prev_curr_to_from_until(int prev, int curr) {
+		// find the range to check.
+		if (curr < prev) return { curr, prev };
+		else return { prev + 1, curr + 1 };
 	}
 };
 
 struct layer_drag_operation : layer_operation {
 	static inline constinit bool flagging = false;
-	virtual bool initialize(int layer) const = 0;
-	virtual bool set(int layer_from, int layer_until, WPARAM wparam) const = 0;
-	virtual bool notify(HWND hwnd) const {}
+	virtual bool set(int layer_prev, int layer_curr, WPARAM wparam) const = 0;
 
 };
 
-template<LayerSetting::Flag flag>
+// 各種フラグ操作．
+template<LayerSetting::Flag flag, bool redraw_screen, bool redraw_entire_tl>
 struct layer_op_flags : layer_drag_operation {
-	bool initialize(int layer) const override
+	bool initialize(int layer, AviUtl::EditHandle* editp) const override
 	{
 		auto& clicked_flag = layer_flags(layer);
 
@@ -181,11 +186,30 @@ struct layer_op_flags : layer_drag_operation {
 		// always results in updates.
 		return true;
 	}
-	bool set(int layer_from, int layer_until, WPARAM) const override
+	bool set(int layer_prev, int layer_curr, WPARAM) const override
 	{
+		auto [from, until] = prev_curr_to_from_until(layer_prev, layer_curr);
+
 		bool updated = false;
-		for (int l = layer_from; l < layer_until; l++) updated |= set(l);
+		for (int l = from; l < until; l++) updated |= set(l);
 		return updated;
+	}
+
+	bool notify() const override
+	{
+		if constexpr (redraw_entire_tl) {
+			// redraw the entire timeline.
+			::InvalidateRect(exedit.fp->hwnd, nullptr, FALSE);
+		}
+		else {
+			// redraw the header part of the timeline.
+			RECT rc; ::GetClientRect(exedit.fp->hwnd, &rc);
+			rc.right = x_leftmost_timeline; rc.top = y_topmost_timeline;
+			::InvalidateRect(exedit.fp->hwnd, &rc, FALSE);
+		}
+
+		// returns true if the image should be updated.
+		return redraw_screen;
 	}
 
 private:
@@ -207,30 +231,13 @@ private:
 		return false;
 	}
 };
-struct layer_op_undisp : layer_op_flags<LayerSetting::Flag::UnDisp> {
-	bool notify(HWND hwnd) const override
-	{
-		// redraw the entire timeline.
-		::InvalidateRect(hwnd, nullptr, FALSE);
+constexpr layer_op_flags<LayerSetting::Flag::UnDisp, true, true> op_undisp;
+constexpr layer_op_flags<LayerSetting::Flag::Locked, false, false> op_locked;
+constexpr layer_op_flags<LayerSetting::Flag::CoordLink, false, false> op_coord_link;
+constexpr layer_op_flags<LayerSetting::Flag::Clip, true, false> op_clip;
 
-		// the image should be updated.
-		return true;
-	}
-};
-struct layer_op_locked : layer_op_flags<LayerSetting::Flag::Locked> {
-	bool notify(HWND hwnd) const override
-	{
-		// redraw the header part of the timeline.
-		RECT rc; ::GetClientRect(hwnd, &rc);
-		rc.right = x_leftmost_timeline; rc.top = y_topmost_timeline;
-		::InvalidateRect(hwnd, &rc, FALSE);
-
-		// the image remains unchanged.
-		return false;
-	}
-};
-
-struct layer_op_select : layer_drag_operation {
+// オブジェクト選択．
+constexpr struct : layer_drag_operation {
 private:
 	static int sorted_to_idx(int j) { return exedit.SortedObject[j] - *exedit.ObjectArray_ptr; }
 	static std::set<int> get_selected() {
@@ -244,7 +251,7 @@ private:
 	}
 
 public:
-	bool initialize(int layer) const override
+	bool initialize(int layer, AviUtl::EditHandle* editp) const override
 	{
 		auto sel = get_selected();
 
@@ -267,15 +274,17 @@ public:
 		set_selected(sel);
 		return true;
 	}
-	bool set(int layer_from, int layer_until, WPARAM wparam) const override
+	bool set(int layer_prev, int layer_curr, WPARAM wparam) const override
 	{
 		// nothing to do when ctrl isn't pressed.
 		if ((wparam & MK_CONTROL) == 0) return false;
 
+		auto [from, until] = prev_curr_to_from_until(layer_prev, layer_curr);
+
 		// update each layer.
 		auto sel = get_selected();
 		auto& op = flagging ? add : remove;
-		for (int l = layer_from; l < layer_until; l++) op(l, sel);
+		for (int l = from; l < until; l++) op(l, sel);
 
 		// if any additions/removals took place, set them back to exedit.
 		if (sel.size() == *exedit.SelectingObjectNum_ptr) return false;
@@ -299,36 +308,36 @@ private:
 	}
 
 public:
-	bool notify(HWND hwnd) const override
+	bool notify() const override
 	{
 		// redraw the entire timeline.
-		::InvalidateRect(hwnd, nullptr, FALSE);
+		::InvalidateRect(exedit.fp->hwnd, nullptr, FALSE);
 
 		// the image remains unchanged.
 		return false;
 	}
-};
+} op_select;
 
-struct layer_op_rename : layer_operation {
-	constexpr static uint32_t
-		layer_command_id_rename = 1056,
-		layer_command_id_toggle_others = 1075;
-	bool execute(HWND hwnd, int mouse_x, int mouse_y, AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp) const override {
-		*exedit.last_clicked_y = mouse_y;
-		return exedit.func_wndproc(hwnd, WM_COMMAND, layer_command_id_rename, 0, editp, fp) != FALSE;
+// 右クリックコマンドの発動．
+template<uint32_t id>
+struct layer_command_operation : layer_operation {
+	constexpr static uint32_t command_id = id;
+	bool initialize(int layer, AviUtl::EditHandle* editp) const override {
+		*exedit.last_clicked_y = layer_to_point(layer);
+		return exedit.func_wndproc(exedit.fp->hwnd, WM_COMMAND, command_id, 0, editp, exedit.fp) != FALSE;
 	}
 };
 
+constexpr static uint32_t
+	layer_command_id_rename = 1056,
+	layer_command_id_toggle_others = 1075;
+constexpr layer_command_operation<layer_command_id_rename> op_rename;
+constexpr layer_command_operation<layer_command_id_toggle_others> op_toggle_others;
 
 ////////////////////////////////
 // ExEdit のコールバック乗っ取り．
 ////////////////////////////////
 class Drag {
-	static constexpr layer_op_undisp op_undisp{};
-	static constexpr layer_op_locked op_locked{};
-	static constexpr layer_op_select op_select{};
-	static constexpr layer_op_rename op_rename{};
-
 	static inline constinit layer_drag_operation const* curr_operation = nullptr;
 	static inline constinit int layer_prev = 0;
 
@@ -346,15 +355,11 @@ class Drag {
 		// return if the position didn't change.
 		if (layer_mouse == layer_prev) return false;
 
-		// set the range to check.
-		int from, until;
-		if (layer_mouse < layer_prev) from = layer_mouse, until = layer_prev;
-		else from = layer_prev + 1, until = layer_mouse + 1;
-
 		// update the previous mouse position.
+		auto prev = layer_prev;
 		layer_prev = layer_mouse;
 
-		return curr_operation->set(from, until, wparam);
+		return curr_operation->set(prev, layer_mouse, wparam);
 	}
 
 	static void exit_drag(HWND hwnd) {
@@ -415,7 +420,7 @@ public:
 			switch (message) {
 			case WM_MOUSEMOVE:
 				return on_drag(layer_operation::point_to_layer(static_cast<int16_t>(lparam >> 16)), wparam, editp)
-					&& curr_operation->notify(hwnd) ? TRUE : FALSE;
+					&& curr_operation->notify() ? TRUE : FALSE;
 
 			case WM_LBUTTONDOWN:
 			case WM_RBUTTONDOWN:
@@ -449,18 +454,15 @@ public:
 			// AviUtl must be in a suitable state.
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) goto default_handler;
 
-			if (curr_operation = dynamic_cast<layer_drag_operation const*>(cand_operation)) {
-				// assigned operation is a drag. so initiate it.
-				::SetCapture(hwnd);
-
 				// initialize related variables.
 				layer_prev = layer_operation::point_to_layer(mouse_y);
-				return curr_operation->initialize(layer_prev)
-					&& curr_operation->notify(hwnd) ? TRUE : FALSE;
-			}
 
-			// assigned operation is not a drag. simply execute it.
-			return cand_operation->execute(hwnd, mouse_x, mouse_y, editp, fp) ? TRUE : FALSE;
+			if (curr_operation = dynamic_cast<layer_drag_operation const*>(cand_operation))
+				// assigned operation is a drag. capture the mouse.
+				::SetCapture(hwnd);
+
+			return cand_operation->initialize(layer_prev, editp)
+				&& cand_operation->notify() ? TRUE : FALSE;
 		}
 
 	default_handler:
@@ -506,7 +508,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.30"
+#define PLUGIN_VERSION	"v1.31-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
