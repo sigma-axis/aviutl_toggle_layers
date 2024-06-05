@@ -170,7 +170,7 @@ protected:
 struct layer_drag_operation : layer_operation {
 	static inline constinit bool flagging = false;
 	virtual bool move(int layer_prev, int layer_curr, WPARAM wparam) const = 0;
-
+	virtual bool finish() const { return false; }
 };
 
 // 各種フラグ操作．
@@ -400,7 +400,12 @@ public:
 		// redraw the entire timeline.
 		::InvalidateRect(exedit.fp->hwnd, nullptr, FALSE);
 
-		// the image also needs updated.
+		// the image will be updated when the drag will finish.
+		return false;
+	}
+	bool finish() const override
+	{
+		// the image needs to be updated.
 		return true;
 	}
 } op_move;
@@ -540,10 +545,16 @@ class Drag {
 		return curr_operation->move(prev, layer_mouse, wparam);
 	}
 
-	static void exit_drag(HWND hwnd) {
-		curr_operation = nullptr;
+	static bool exit_drag(HWND hwnd) {
+		bool redraw = false;
+		if (curr_operation != nullptr) {
+			redraw = curr_operation->finish();
+			curr_operation = nullptr;
+		}
 		if (::GetCapture() == hwnd)
 			::ReleaseCapture();
+
+		return redraw;
 	}
 
 	// scrolls the timeline vertically when dragging over the visible area.
@@ -610,8 +621,7 @@ public:
 			case WM_XBUTTONUP:
 				// any mouse button would stop this drag.
 			case WM_CAPTURECHANGED: // drag aborted.
-				exit_drag(hwnd);
-				return FALSE;
+				return exit_drag(hwnd) ? TRUE : FALSE;
 
 			default:
 				// otherwise let it be handled normally.
@@ -694,7 +704,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.50-beta2"
+#define PLUGIN_VERSION	"v1.50-beta3"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
