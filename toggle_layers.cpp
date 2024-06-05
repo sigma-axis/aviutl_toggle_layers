@@ -169,7 +169,7 @@ protected:
 
 struct layer_drag_operation : layer_operation {
 	static inline constinit bool flagging = false;
-	virtual bool set(int layer_prev, int layer_curr, WPARAM wparam) const = 0;
+	virtual bool move(int layer_prev, int layer_curr, WPARAM wparam) const = 0;
 
 };
 
@@ -191,7 +191,7 @@ struct layer_op_flags : layer_drag_operation {
 		// always results in updates.
 		return true;
 	}
-	bool set(int layer_prev, int layer_curr, WPARAM) const override
+	bool move(int layer_prev, int layer_curr, WPARAM) const override
 	{
 		auto [from, until] = prev_curr_to_from_until(layer_prev, layer_curr);
 
@@ -278,7 +278,7 @@ public:
 		set_selected(sel);
 		return true;
 	}
-	bool set(int layer_prev, int layer_curr, WPARAM wparam) const override
+	bool move(int layer_prev, int layer_curr, WPARAM wparam) const override
 	{
 		// nothing to do when ctrl isn't pressed.
 		if ((wparam & MK_CONTROL) == 0) return false;
@@ -346,29 +346,33 @@ public:
 	{
 		// reset the "setundo() was called" flags.
 		range_undo_set.start(layer);
+		::SetCursor(::LoadCursorW(nullptr, reinterpret_cast<const wchar_t*>(IDC_SIZENS)));
 		return false;
 	}
-	bool set(int layer_prev, int layer_curr, WPARAM wparam) const override
+	bool move(int layer_prev, int layer_curr, WPARAM wparam) const override
 	{
 		int dir = layer_prev < layer_curr ? +1 : -1;
 
 		// call setundo() for each layer if not yet.
 		if (range_undo_set.is_empty()) exedit.nextundo();
 		for (int layer = layer_prev; layer != layer_curr + dir; layer += dir) {
-			if (!range_undo_set.is_marked(layer)) {
-				for (int j = exedit.SortedObjectLayerBeginIndex[layer], R = exedit.SortedObjectLayerEndIndex[layer];
-					j <= R; j++)
-					set_object_undo(sorted_to_idx(j));
-				set_layer_undo(layer);
-			}
+			if (range_undo_set.is_marked(layer)) continue;
+			for (int j = exedit.SortedObjectLayerBeginIndex[layer], R = exedit.SortedObjectLayerEndIndex[layer];
+				j <= R; j++)
+				set_object_undo(sorted_to_idx(j));
+			set_layer_undo(layer);
 		}
 		range_undo_set.mark_range(layer_prev, layer_curr);
+
+		bool modified = false;
 
 		// modify the objects on the dragged layer.
 		for (int j = exedit.SortedObjectLayerBeginIndex[layer_prev], R = exedit.SortedObjectLayerEndIndex[layer_prev];
 			j <= R; j++) {
 			auto* obj = exedit.SortedObject[j];
 			obj->layer_disp = obj->layer_set = layer_curr;
+
+			modified = true;
 		}
 		auto dragged_layer_settings = exedit.LayerSettings[layer_prev];
 
@@ -378,13 +382,17 @@ public:
 				j <= R; j++) {
 				auto* obj = exedit.SortedObject[j];
 				obj->layer_disp = obj->layer_set = layer;
+
+				modified = true;
 			}
 			exedit.LayerSettings[layer] = exedit.LayerSettings[layer + dir];
 		}
 		exedit.LayerSettings[layer_curr] = dragged_layer_settings;
 
-		// then update the sorted tables.
-		exedit.update_ObjectTables();
+		if (modified)
+			// update the sorted table if any of the objects moved.
+			exedit.update_ObjectTables();
+
 		return true;
 	}
 	bool notify() const override
@@ -436,38 +444,12 @@ enum class layer_op_kind : uint8_t {
 	move          = 8,
 };
 inline constinit struct Settings {
-private:
-	static constexpr const char* mod_key_name(mod_key keys) {
-		switch (keys) {
-			using enum mod_key;
-		case no_keys:				return "no_keys";
-		case ctrl:					return "ctrl";
-		case shift:					return "shift";
-		case ctrl | shift:			return "ctrl_shift";
-		case alt:					return "alt";
-		case ctrl | alt:			return "ctrl_alt";
-		case shift | alt:			return "shift_alt";
-		case ctrl | shift | alt:	return "ctrl_shift_alt";
-		}
-		std::unreachable();
-	}
-
-public:
 	void load(const char* inifile)
 	{
-		for (auto [k, v] : mapping | std::views::enumerate) {
-			auto key = static_cast<mod_key>(k);
-			auto val = static_cast<layer_op_kind>(::GetPrivateProfileIntA(
-				"key_combination", mod_key_name(key), static_cast<int>(v), inifile));
-
-			// select operation requires ctrl key pressed.
-			if (val == layer_op_kind::select && !has_flag_or(key, mod_key::ctrl))
-				v = layer_op_kind::none;
-			else v = val;
-		}
+		load_map(inifile, "drag", mapping);
 	}
 
-	layer_operation const* map(mod_key keys) const
+	layer_operation const* map_drag(mod_key keys) const
 	{
 		auto i = static_cast<size_t>(keys);
 		if (i >= std::size(mapping)) return nullptr;
@@ -500,6 +482,33 @@ private:
 		layer_op_kind::none,	// shift+alt.
 		layer_op_kind::none,	// ctrl+shift+alt.
 	};
+	void load_map(const char* inifile, const char* section, layer_op_kind(&map)[1 << 3])
+	{
+		for (auto [k, v] : map | std::views::enumerate) {
+			auto key = static_cast<mod_key>(k);
+			auto val = static_cast<layer_op_kind>(::GetPrivateProfileIntA(
+				section, mod_key_name(key), static_cast<int>(v), inifile));
+
+			// select operation requires ctrl key pressed.
+			if (val == layer_op_kind::select && !has_flag_or(key, mod_key::ctrl))
+				v = layer_op_kind::none;
+			else v = val;
+		}
+	}
+	static constexpr const char* mod_key_name(mod_key keys) {
+		switch (keys) {
+			using enum mod_key;
+		case no_keys:				return "no_keys";
+		case ctrl:					return "ctrl";
+		case shift:					return "shift";
+		case ctrl | shift:			return "ctrl_shift";
+		case alt:					return "alt";
+		case ctrl | alt:			return "ctrl_alt";
+		case shift | alt:			return "shift_alt";
+		case ctrl | shift | alt:	return "ctrl_shift_alt";
+		}
+		std::unreachable();
+	}
 } settings;
 
 
@@ -528,7 +537,7 @@ class Drag {
 		auto prev = layer_prev;
 		layer_prev = layer_mouse;
 
-		return curr_operation->set(prev, layer_mouse, wparam);
+		return curr_operation->move(prev, layer_mouse, wparam);
 	}
 
 	static void exit_drag(HWND hwnd) {
@@ -573,7 +582,7 @@ class Drag {
 		if ((wparam & MK_CONTROL) != 0) keys |= ctrl;
 		if ((wparam & MK_SHIFT) != 0) keys |= shift;
 		if (::GetKeyState(VK_MENU) < 0) keys |= alt;
-		return settings.map(keys);
+		return settings.map_drag(keys);
 	}
 
 public:
@@ -613,15 +622,15 @@ public:
 			// assume left click with no modifier keys other than shift.
 			if (message != WM_LBUTTONDOWN) goto default_handler;
 
-			layer_operation const* cand_operation = choose_operation(wparam);
-			if (cand_operation == nullptr) goto default_handler;
-
 			// the mouse should be on a layer header.
 			int mouse_x = static_cast<int16_t>(lparam), mouse_y = static_cast<int16_t>(lparam >> 16);
 			if (!layer_operation::point_in_header(mouse_x, mouse_y)) goto default_handler;
 
 			// AviUtl must be in a suitable state.
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) goto default_handler;
+
+			layer_operation const* cand_operation = choose_operation(wparam);
+			if (cand_operation == nullptr) goto default_handler;
 
 			// initialize related variables.
 			layer_prev = layer_operation::point_to_layer(mouse_y);
@@ -685,7 +694,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.50-beta1"
+#define PLUGIN_VERSION	"v1.50-beta2"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
