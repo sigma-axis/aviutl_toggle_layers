@@ -424,20 +424,21 @@ public:
 } op_move;
 
 // 右クリックコマンドの発動．
-template<uint32_t id>
+template<uint32_t id, bool redraw>
 struct layer_command_operation : layer_operation {
 	constexpr static uint32_t command_id = id;
 	bool initialize(int layer, AviUtl::EditHandle* editp) const override {
 		*exedit.last_clicked_y = layer_to_point(layer);
 		return exedit.func_wndproc(exedit.fp->hwnd, WM_COMMAND, command_id, 0, editp, exedit.fp) != FALSE;
 	}
+	bool notify() const override { return redraw; }
 };
 
 constexpr static uint32_t
 	layer_command_id_rename = 1056,
 	layer_command_id_toggle_others = 1075;
-constexpr layer_command_operation<layer_command_id_rename> op_rename;
-constexpr layer_command_operation<layer_command_id_toggle_others> op_toggle_others;
+constexpr layer_command_operation<layer_command_id_rename, false> op_rename;
+constexpr layer_command_operation<layer_command_id_toggle_others, true> op_toggle_others;
 
 
 ////////////////////////////////
@@ -715,7 +716,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.50-pre1"
+#define PLUGIN_VERSION	"v1.50-pre2"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
