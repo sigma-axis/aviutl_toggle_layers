@@ -466,6 +466,14 @@ inline constinit struct Settings {
 	void load(const char* inifile)
 	{
 		load_map(inifile, "drag", mapping);
+
+		// timer delay.
+		auto_scroll_delay_ms = static_cast<size_t>(std::clamp<int32_t>(
+			::GetPrivateProfileIntA(
+			"scroll", "auto_scroll_delay_ms", static_cast<int>(auto_scroll_delay_ms), inifile),
+			auto_scroll_delay_ms_min, auto_scroll_delay_ms_max));
+		if (0 < auto_scroll_delay_ms && auto_scroll_delay_ms < USER_TIMER_MINIMUM)
+			auto_scroll_delay_ms = USER_TIMER_MINIMUM;
 	}
 
 	layer_operation const* map_drag(mod_key keys) const
@@ -478,6 +486,9 @@ inline constinit struct Settings {
 
 		return kind_to_ptr[j];
 	}
+
+	size_t auto_scroll_delay_ms = 100;
+	constexpr static size_t auto_scroll_delay_ms_min = 0, auto_scroll_delay_ms_max = 10'000;
 
 private:
 	static constexpr layer_operation const* kind_to_ptr[]{
@@ -541,11 +552,17 @@ class Drag {
 	static bool on_drag(int layer_mouse, WPARAM wparam, AviUtl::EditHandle* editp)
 	{
 		// scroll vertically if the mouse is outside the window.
-		scroll_vertically_on_drag(layer_mouse, editp);
+		int dir = scroll_vertically_on_drag(layer_mouse, editp);
 
 		// limit the target layers to the visible ones.
 		auto top_layer = tl_scroll_v.get_pos();
 		layer_mouse = std::clamp(layer_mouse, top_layer, top_layer + tl_scroll_v.get_page_size() - 1);
+
+		// set timer for automatic overflow scrolling.
+		switch (dir) {
+		case 0: timer_data.kill_timer(false); break;
+		case +1: case -1: timer_data.set_timer(layer_mouse + dir); break;
+		}
 
 		// return if the position didn't change.
 		if (layer_mouse == layer_prev) return false;
@@ -570,29 +587,66 @@ class Drag {
 	}
 
 	// scrolls the timeline vertically when dragging over the visible area.
-	// there are at least 100 ms intervals between scrolls.
-	static void scroll_vertically_on_drag(int layer_mouse, AviUtl::EditHandle* editp) {
-		constexpr uint32_t interval_min = 100;
-
+	// there are at least certain time of intervals between scrolls.
+	// returns the direction (+1/-1), 0 (not overflowing), or -2 (too early from the last scroll).
+	static int scroll_vertically_on_drag(int layer_mouse, AviUtl::EditHandle* editp) {
 		constexpr auto check_tick = [] {
 		#pragma warning(suppress : 28159) // 32 bit is enough.
 			auto curr = ::GetTickCount();
 
 			static constinit decltype(curr) prev = 0;
-			if (curr - prev < interval_min) return false;
+			if (curr - prev < settings.auto_scroll_delay_ms) return false;
 			prev = curr;
 			return true;
 		};
 
 		int dir;
-		if (auto rel_pos = layer_mouse - tl_scroll_v.get_pos();
+		if (settings.auto_scroll_delay_ms <= 0) return 0;
+		else if (auto rel_pos = layer_mouse - tl_scroll_v.get_pos();
 			rel_pos < 0) dir = -1;
 		else if (rel_pos >= tl_scroll_v.get_page_size()) dir = +1;
-		else return;
-		if (!check_tick()) return;
+		else return 0;
+		if (!check_tick()) return -2;
 
 		// then scroll.
 		tl_scroll_v.set_pos(tl_scroll_v.get_pos() + dir, editp);
+		return dir;
+	}
+
+	static inline constinit struct {
+		int layer_next;
+		bool is_valid() const { return is_valid(layer_next); }
+		auto invalidate() {
+			auto ret = layer_next;
+			layer_next = -1;
+			return ret;
+		}
+		void set_timer(int layer) {
+			if (!is_valid(layer)) return;
+			layer_next = layer;
+			::SetTimer(exedit.fp->hwnd, timer_id(), settings.auto_scroll_delay_ms, nullptr);
+		}
+		int kill_timer(bool force) {
+			if (!force && !is_valid()) return -1;
+			::KillTimer(exedit.fp->hwnd, timer_id());
+			return invalidate();
+		}
+		static bool is_valid(int layer) {
+			return 0 <= layer && layer < layer_operation::num_layers;
+		}
+		uintptr_t timer_id() const { return reinterpret_cast<uintptr_t>(this); }
+	} timer_data{ -1 };
+	static bool on_timer(AviUtl::EditHandle* editp)
+	{
+		int layer = timer_data.kill_timer(true);
+		if (!timer_data.is_valid(layer)) return false;
+
+		// construct WPARAM.
+		WPARAM wparam = MK_LBUTTON;
+		if (::GetKeyState(VK_CONTROL)) wparam |= MK_CONTROL;
+		if (::GetKeyState(VK_SHIFT)) wparam |= MK_SHIFT;
+
+		return on_drag(layer, wparam, editp);
 	}
 
 	static layer_operation const* choose_operation(WPARAM wparam) {
@@ -621,6 +675,11 @@ public:
 			switch (message) {
 			case WM_MOUSEMOVE:
 				return on_drag(layer_operation::point_to_layer(static_cast<int16_t>(lparam >> 16)), wparam, editp)
+					&& curr_operation->notify() ? TRUE : FALSE;
+
+			case WM_TIMER:
+				if (reinterpret_cast<WPARAM>(&timer_data) != wparam) goto default_handler;
+				return on_timer(editp)
 					&& curr_operation->notify() ? TRUE : FALSE;
 
 			case WM_LBUTTONDOWN:
@@ -716,7 +775,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.50"
+#define PLUGIN_VERSION	"v1.51-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
