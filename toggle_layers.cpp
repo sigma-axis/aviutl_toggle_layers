@@ -65,6 +65,8 @@ inline constinit struct ExEdit092 {
 	//int32_t*	last_clicked_x;					// 0x1460b4
 	int32_t*	last_clicked_y;					// 0x196744
 
+	uint32_t*	undo_id_ptr;					// 0x244e08 + 12
+
 	void(*nextundo)();							// 0x08d150
 	void(*setundo)(uint32_t, uint32_t);			// 0x08d290
 	int32_t(*update_ObjectTables)();			// 0x02b0f0
@@ -90,6 +92,8 @@ private:
 
 		//pick_addr(last_clicked_x				0x1460b4);
 		pick_addr(last_clicked_y,				0x196744);
+
+		pick_addr(undo_id_ptr,					0x244e08 + 12);
 
 		pick_addr(nextundo,						0x08d150);
 		pick_addr(setundo,						0x08d290);
@@ -153,12 +157,19 @@ struct layer_operation {
 	static auto& layer_flags(int layer) {
 		return exedit.LayerSettings[layer + num_layers * (*exedit.current_scene)].flag;
 	}
-	static void set_layer_undo(int layer) { exedit.setundo(layer, 0x10); }
 
 	virtual bool initialize(int layer, AviUtl::EditHandle* editp) const = 0;
 	virtual bool notify() const { return false; }
+	static bool should_abort() { return curr_undo_id != *exedit.undo_id_ptr; }
 
 protected:
+	static inline uint32_t curr_undo_id{};
+	static void update_undo_id() { curr_undo_id = *exedit.undo_id_ptr; }
+	static void next_undo(){
+		exedit.nextundo();
+		update_undo_id();
+	}
+	static void set_layer_undo(int layer) { exedit.setundo(layer, 0x10); }
 	static std::pair<int, int> prev_curr_to_from_until(int prev, int curr) {
 		// find the range to check.
 		if (curr < prev) return { curr, prev };
@@ -181,7 +192,7 @@ struct layer_op_flags : layer_drag_operation {
 		auto& clicked_flag = layer_flags(layer);
 
 		// prepare and push to the undo buffer.
-		exedit.nextundo();
+		next_undo();
 		set_layer_undo(layer);
 
 		// update the clicked layer.
@@ -334,7 +345,7 @@ private:
 		void mark_range(int l1, int l2) {
 			if (l1 > l2) std::swap(l1, l2);
 			if (l1 < from) from = l1;
-			else if (l2 >= until) until = l2 + 1;
+			if (l2 >= until) until = l2 + 1;
 		}
 		void start(int layer) { from = until = layer; }
 	} range_undo_set{ 0, 0 };
@@ -346,6 +357,7 @@ public:
 	{
 		// reset the "setundo() was called" flags.
 		range_undo_set.start(layer);
+		update_undo_id();
 		::SetCursor(::LoadCursorW(nullptr, reinterpret_cast<const wchar_t*>(IDC_SIZENS)));
 		return false;
 	}
@@ -354,7 +366,7 @@ public:
 		int dir = layer_prev < layer_curr ? +1 : -1;
 
 		// call setundo() for each layer if not yet.
-		if (range_undo_set.is_empty()) exedit.nextundo();
+		if (range_undo_set.is_empty()) next_undo();
 		for (int layer = layer_prev; layer != layer_curr + dir; layer += dir) {
 			if (range_undo_set.is_marked(layer)) continue;
 			for (int j = exedit.SortedObjectLayerBeginIndex[layer], R = exedit.SortedObjectLayerEndIndex[layer];
@@ -600,7 +612,9 @@ public:
 	static BOOL func_wndproc_detour(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp)
 	{
 		if (curr_operation != nullptr) {
-			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) {
+			if (curr_operation->should_abort() ||
+				!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) {
+				// either there was another edit while dragging, or
 				// AviUtl isn't in a suitable state. abort dragging.
 				exit_drag(hwnd);
 				goto default_handler;
@@ -704,7 +718,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.50-beta3"
+#define PLUGIN_VERSION	"v1.50-beta4"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
