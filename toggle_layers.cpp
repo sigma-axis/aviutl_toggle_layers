@@ -287,6 +287,7 @@ public:
 		// if any additions/removals took place, set them back to exedit.
 		if (sel.size() == *exedit.SelectingObjectNum_ptr) return false;
 		set_selected(sel);
+		update_undo_id();
 		return true;
 	}
 	bool move(int layer_prev, int layer_curr, WPARAM wparam) const override
@@ -714,7 +715,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.50-beta5"
+#define PLUGIN_VERSION	"v1.50-pre1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
