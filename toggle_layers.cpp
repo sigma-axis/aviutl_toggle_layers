@@ -219,8 +219,10 @@ struct layer_op_flags : layer_drag_operation {
 		}
 		else {
 			// redraw the header part of the timeline.
-			RECT rc; ::GetClientRect(exedit.fp->hwnd, &rc);
-			rc.right = x_leftmost_timeline; rc.top = y_topmost_timeline;
+			RECT rc{
+				.left = 0, .top = y_topmost_timeline, .right = x_leftmost_timeline,
+				.bottom = y_topmost_timeline + tl_scroll_v.get_page_size() * (*exedit.curr_timeline_layer_height),
+			};
 			::InvalidateRect(exedit.fp->hwnd, &rc, FALSE);
 		}
 
@@ -231,20 +233,18 @@ struct layer_op_flags : layer_drag_operation {
 private:
 	static bool set(int layer)
 	{
-		if (auto& flags = layer_flags(layer);
-			has_flag_or(flags, flag) ^ flagging) {
+		auto& flags = layer_flags(layer);
+		if (has_flag_or(flags, flag) == flagging)
+			return false; // flag didn't change.
 
-			// push undo buffer.
-			set_layer_undo(layer);
+		// push undo buffer.
+		set_layer_undo(layer);
 
-			// modify the flag.
-			flags ^= flag;
+		// modify the flag.
+		flags ^= flag;
 
-			// flag did change.
-			return true;
-		}
-		// flag didn't change.
-		return false;
+		// flag did change.
+		return true;
 	}
 };
 constexpr layer_op_flags<LayerSetting::Flag::UnDisp, true, true> op_undisp;
@@ -541,11 +541,9 @@ class Drag {
 		// scroll vertically if the mouse is outside the window.
 		scroll_vertically_on_drag(layer_mouse, editp);
 
-		{
-			// limit the target layers to the visible ones.
-			auto top_layer = tl_scroll_v.get_pos();
-			layer_mouse = std::clamp(layer_mouse, top_layer, top_layer + tl_scroll_v.get_page_size() - 1);
-		}
+		// limit the target layers to the visible ones.
+		auto top_layer = tl_scroll_v.get_pos();
+		layer_mouse = std::clamp(layer_mouse, top_layer, top_layer + tl_scroll_v.get_page_size() - 1);
 
 		// return if the position didn't change.
 		if (layer_mouse == layer_prev) return false;
@@ -579,11 +577,9 @@ class Drag {
 			auto curr = ::GetTickCount();
 
 			static constinit decltype(curr) prev = 0;
-			if (curr - prev >= interval_min) {
-				prev = curr;
-				return true;
-			}
-			return false;
+			if (curr - prev < interval_min) return false;
+			prev = curr;
+			return true;
 		};
 
 		int dir;
@@ -688,7 +684,7 @@ static BOOL func_init(AviUtl::FilterPlugin* fp)
 	// 設定ロード．
 	char path[MAX_PATH];
 	auto len = ::GetModuleFileNameA(fp->dll_hinst, path, std::size(path));
-	if (len >= 3) {
+	if (3 <= len && len < std::size(path)) {
 		::strcpy_s(&path[len - 3], 3 + 1, "ini");
 		settings.load(path);
 	}
@@ -718,7 +714,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.50-beta4"
+#define PLUGIN_VERSION	"v1.50-beta5"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
