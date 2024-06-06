@@ -440,6 +440,11 @@ constexpr static uint32_t
 constexpr layer_command_operation<layer_command_id_rename, false> op_rename;
 constexpr layer_command_operation<layer_command_id_toggle_others, true> op_toggle_others;
 
+// 何もしないダミー．
+constexpr struct : layer_operation {
+	bool initialize(int layer, AviUtl::EditHandle* editp) const override { return false; }
+} op_does_nothing;
+
 
 ////////////////////////////////
 // 設定項目．
@@ -461,11 +466,17 @@ enum class layer_op_kind : uint8_t {
 	rename        = 6,
 	toggle_others = 7,
 	move          = 8,
+	ignore        = 255,
 };
 inline constinit struct Settings {
 	void load(const char* inifile)
 	{
-		load_map(inifile, "drag", mapping);
+		auto filter = [](mod_key key, layer_op_kind val) {
+			// select operation requires ctrl key pressed.
+			return val != layer_op_kind::select || has_flag_or(key, mod_key::ctrl);
+		};
+		load_map(inifile, "drag", drag_mapping, filter);
+		load_map(inifile, "double_click", double_click_mapping, filter);
 
 		// timer delay.
 		auto_scroll_delay_ms = static_cast<size_t>(std::clamp<int32_t>(
@@ -476,21 +487,27 @@ inline constinit struct Settings {
 			auto_scroll_delay_ms = USER_TIMER_MINIMUM;
 	}
 
-	layer_operation const* map_drag(mod_key keys) const
-	{
-		auto i = static_cast<size_t>(keys);
-		if (i >= std::size(mapping)) return nullptr;
-
-		auto j = static_cast<size_t>(mapping[i]);
-		if (j >= std::size(kind_to_ptr)) return nullptr;
-
-		return kind_to_ptr[j];
-	}
+	layer_operation const* map_drag(mod_key keys) const { return map(keys, drag_mapping); }
+	layer_operation const* map_double_click(mod_key keys) const { return map(keys, double_click_mapping); }
 
 	size_t auto_scroll_delay_ms = 100;
 	constexpr static size_t auto_scroll_delay_ms_min = 0, auto_scroll_delay_ms_max = 10'000;
 
 private:
+	static layer_operation const* map(mod_key keys, const layer_op_kind(&map)[1 << 3])
+	{
+		auto i = static_cast<size_t>(keys);
+		if (i >= std::size(map)) return nullptr;
+
+		auto j = static_cast<size_t>(map[i]);
+		if (j >= std::size(kind_to_ptr)) {
+			if (j == static_cast<size_t>(layer_op_kind::ignore)) return &op_does_nothing;
+			return nullptr;
+		}
+
+		return kind_to_ptr[j];
+	}
+
 	static constexpr layer_operation const* kind_to_ptr[]{
 		nullptr,
 		&op_undisp,
@@ -502,7 +519,7 @@ private:
 		&op_toggle_others,
 		&op_move,
 	};
-	layer_op_kind mapping[1 << 3]{
+	layer_op_kind drag_mapping[1 << 3]{
 		layer_op_kind::undisp,	// no mod key.
 		layer_op_kind::select,	// ctrl.
 		layer_op_kind::locked,	// shift.
@@ -512,17 +529,24 @@ private:
 		layer_op_kind::none,	// shift+alt.
 		layer_op_kind::none,	// ctrl+shift+alt.
 	};
-	void load_map(const char* inifile, const char* section, layer_op_kind(&map)[1 << 3])
+	layer_op_kind double_click_mapping[1 << 3]{
+		layer_op_kind::toggle_others,	// no mod key.
+		layer_op_kind::none,			// ctrl.
+		layer_op_kind::none,			// shift.
+		layer_op_kind::none,			// ctrl+shift.
+		layer_op_kind::none,			// alt.
+		layer_op_kind::none,			// ctrl+alt.
+		layer_op_kind::none,			// shift+alt.
+		layer_op_kind::none,			// ctrl+shift+alt.
+	};
+	void load_map(const char* inifile, const char* section, layer_op_kind(&map)[1 << 3], auto filter)
 	{
 		for (auto [k, v] : map | std::views::enumerate) {
 			auto key = static_cast<mod_key>(k);
 			auto val = static_cast<layer_op_kind>(::GetPrivateProfileIntA(
 				section, mod_key_name(key), static_cast<int>(v), inifile));
 
-			// select operation requires ctrl key pressed.
-			if (val == layer_op_kind::select && !has_flag_or(key, mod_key::ctrl))
-				v = layer_op_kind::none;
-			else v = val;
+			v = filter(key, val) ? val : layer_op_kind::none;
 		}
 	}
 	static constexpr const char* mod_key_name(mod_key keys) {
@@ -545,7 +569,7 @@ private:
 ////////////////////////////////
 // ExEdit のコールバック乗っ取り．
 ////////////////////////////////
-class Drag {
+class Detour {
 	static inline constinit layer_drag_operation const* curr_operation = nullptr;
 	static inline constinit int layer_prev = 0;
 
@@ -649,7 +673,7 @@ class Drag {
 		return on_drag(layer, wparam, editp);
 	}
 
-	static layer_operation const* choose_operation(WPARAM wparam) {
+	static layer_operation const* choose_operation(bool is_drag, WPARAM wparam) {
 		if (wparam & ~(MK_LBUTTON | MK_CONTROL | MK_SHIFT)) return nullptr;
 
 		using enum mod_key;
@@ -657,7 +681,7 @@ class Drag {
 		if ((wparam & MK_CONTROL) != 0) keys |= ctrl;
 		if ((wparam & MK_SHIFT) != 0) keys |= shift;
 		if (::GetKeyState(VK_MENU) < 0) keys |= alt;
-		return settings.map_drag(keys);
+		return is_drag ? settings.map_drag(keys) : settings.map_double_click(keys);
 	}
 
 public:
@@ -699,10 +723,7 @@ public:
 				goto default_handler;
 			}
 		}
-		else {
-			// assume left click with no modifier keys other than shift.
-			if (message != WM_LBUTTONDOWN) goto default_handler;
-
+		else if (message == WM_LBUTTONDOWN || message == WM_LBUTTONDBLCLK) {
 			// the mouse should be on a layer header.
 			int mouse_x = static_cast<int16_t>(lparam), mouse_y = static_cast<int16_t>(lparam >> 16);
 			if (!layer_operation::point_in_header(mouse_x, mouse_y)) goto default_handler;
@@ -710,7 +731,8 @@ public:
 			// AviUtl must be in a suitable state.
 			if (!fp->exfunc->is_editing(editp) || fp->exfunc->is_saving(editp)) goto default_handler;
 
-			layer_operation const* cand_operation = choose_operation(wparam);
+			// choose the operation according to the modifier keys.
+			layer_operation const* cand_operation = choose_operation(message == WM_LBUTTONDOWN, wparam);
 			if (cand_operation == nullptr) goto default_handler;
 
 			// initialize related variables.
@@ -720,6 +742,7 @@ public:
 				// assigned operation is a drag. capture the mouse.
 				::SetCapture(hwnd);
 
+			// perform the operation.
 			return cand_operation->initialize(layer_prev, editp)
 				&& cand_operation->notify() ? TRUE : FALSE;
 		}
@@ -751,7 +774,7 @@ static BOOL func_init(AviUtl::FilterPlugin* fp)
 	}
 
 	// コールバック関数差し替え．
-	exedit.fp->func_WndProc = &Drag::func_wndproc_detour;
+	exedit.fp->func_WndProc = &Detour::func_wndproc_detour;
 
 	return TRUE;
 }
@@ -775,7 +798,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.51-beta1"
+#define PLUGIN_VERSION	"v1.60-beta2"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
