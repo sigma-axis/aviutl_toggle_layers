@@ -8,6 +8,9 @@
 
 https://github.com/sigma-axis/aviutl_toggle_layers/assets/132639613/63deb25e-f931-49f6-92c0-a3dbc9b4ea90
 
+https://github.com/sigma-axis/aviutl_toggle_layers/assets/132639613/0fc36ad1-d997-4882-9916-8b49dd24791c
+
+
 ## 動作要件
 
 - AviUtl 1.10 + 拡張編集 0.92
