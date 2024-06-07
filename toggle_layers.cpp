@@ -667,8 +667,8 @@ class Detour {
 
 		// construct WPARAM.
 		WPARAM wparam = MK_LBUTTON;
-		if (::GetKeyState(VK_CONTROL)) wparam |= MK_CONTROL;
-		if (::GetKeyState(VK_SHIFT)) wparam |= MK_SHIFT;
+		if (::GetKeyState(VK_CONTROL) < 0) wparam |= MK_CONTROL;
+		if (::GetKeyState(VK_SHIFT) < 0) wparam |= MK_SHIFT;
 
 		return on_drag(layer, wparam, editp);
 	}
@@ -702,7 +702,7 @@ public:
 					&& curr_operation->notify() ? TRUE : FALSE;
 
 			case WM_TIMER:
-				if (reinterpret_cast<WPARAM>(&timer_data) != wparam) goto default_handler;
+				if (timer_data.timer_id() != wparam) goto default_handler;
 				return on_timer(editp)
 					&& curr_operation->notify() ? TRUE : FALSE;
 
@@ -798,7 +798,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"レイヤー一括切り替え"
-#define PLUGIN_VERSION	"v1.60"
+#define PLUGIN_VERSION	"v1.61-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
