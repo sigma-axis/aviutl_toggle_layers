@@ -154,8 +154,11 @@ struct layer_operation {
 		return layer;
 	}
 
+	static auto& layer_settings(int layer) {
+		return exedit.LayerSettings[layer + num_layers * (*exedit.current_scene)];
+	}
 	static auto& layer_flags(int layer) {
-		return exedit.LayerSettings[layer + num_layers * (*exedit.current_scene)].flag;
+		return layer_settings(layer).flag;
 	}
 
 	virtual bool initialize(int layer, AviUtl::EditHandle* editp) const = 0;
@@ -387,7 +390,7 @@ public:
 
 			modified = true;
 		}
-		auto dragged_layer_settings = exedit.LayerSettings[layer_prev];
+		ExEdit::LayerSetting dragged_layer_settings = layer_settings(layer_prev);
 
 		// modify objects and the settings of passing-through layers.
 		for (int layer = layer_prev; layer != layer_curr; layer += dir) {
@@ -398,9 +401,9 @@ public:
 
 				modified = true;
 			}
-			exedit.LayerSettings[layer] = exedit.LayerSettings[layer + dir];
+			layer_settings(layer) = layer_settings(layer + dir);
 		}
-		exedit.LayerSettings[layer_curr] = dragged_layer_settings;
+		layer_settings(layer_curr) = dragged_layer_settings;
 
 		if (modified)
 			// update the sorted table if any of the objects moved.
@@ -591,19 +594,14 @@ class Detour {
 		// return if the position didn't change.
 		if (layer_mouse == layer_prev) return false;
 
-		// update the previous mouse position.
-		auto prev = layer_prev;
-		layer_prev = layer_mouse;
-
-		return curr_operation->move(prev, layer_mouse, wparam);
+		// then pass to the drag handler.
+		return curr_operation->move(std::exchange(layer_prev, layer_mouse), layer_mouse, wparam);
 	}
 
 	static bool exit_drag(HWND hwnd) {
 		bool redraw = false;
-		if (curr_operation != nullptr) {
-			redraw = curr_operation->finish();
-			curr_operation = nullptr;
-		}
+		if (curr_operation != nullptr)
+			redraw = std::exchange(curr_operation, nullptr)->finish();
 		if (::GetCapture() == hwnd)
 			::ReleaseCapture();
 
@@ -640,11 +638,7 @@ class Detour {
 	static inline constinit struct {
 		int layer_next;
 		bool is_valid() const { return is_valid(layer_next); }
-		auto invalidate() {
-			auto ret = layer_next;
-			layer_next = -1;
-			return ret;
-		}
+		auto invalidate() { return std::exchange(layer_next, -1); }
 		void set_timer(int layer) {
 			if (!is_valid(layer)) return;
 			layer_next = layer;
