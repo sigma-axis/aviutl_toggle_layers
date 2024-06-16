@@ -23,6 +23,12 @@ https://github.com/sigma-axis/aviutl_toggle_layers/assets/132639613/0fc36ad1-d99
 
   https://learn.microsoft.com/ja-jp/cpp/windows/latest-supported-vc-redist
 
+- **(推奨)** patch.aul r43 謎さうなフォーク版60 以降
+
+  https://github.com/nazonoSAUNA/patch.aul
+
+  - レイヤーのドラッグ移動操作とレイヤー名変更を繰り返した後「元に戻す」を行うとレイヤー名がおかしくなる不具合が修正されます．
+
 ## 導入方法
 
 以下のフォルダのいずれかに `toggle_layers.auf` と `toggle_layers.ini` をコピーしてください．
@@ -70,6 +76,10 @@ https://github.com/sigma-axis/aviutl_toggle_layers/assets/132639613/0fc36ad1-d99
 
 - ダブルクリックに操作を割り当てている場合でもシングルクリックによる動作が実行されます．シングルクリックによる動作を無効化したい場合は，設定ファイルを編集して当該項目に「本当に何もしない」を割り当ててください．
 
+
+### 既知の不具合
+
+- レイヤーのドラッグ移動とレイヤー名変更を繰り返した後「元に戻す」をすると，レイヤー名がきちんと元に戻らなかったり全く別の名前になったりすることがあります．[patch.aul r43 謎さうなフォーク版60 以降](https://github.com/nazonoSAUNA/patch.aul) の導入で修正されます．
 
 ## 改版履歴
 
